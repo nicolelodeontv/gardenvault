@@ -96,10 +96,14 @@ function renderVaults(vaults) {
       button.disabled = true; status.textContent = "Decrypting in memory and analyzing binary structure…"; status.className = "vault-row-status";
       try {
         const report = await invoke("inspect_vault", { fileName, passphrase });
-        const deviceCaptureAttested = report.captureIntegrity === "device-stat-sha256-v1";
-        const captureIntegritySummary = deviceCaptureAttested
-          ? "Capture transfer attestation: device stat size and SHA-256 matched the received bytes."
-          : "Capture transfer attestation: unavailable for this older vault; only the encrypted vault payload is being integrity-checked.";
+        const devicePullAttested = report.captureIntegrity === "device-copy-pull-sha256-v1";
+        const legacyDeviceAttested = report.captureIntegrity === "device-stat-sha256-v1";
+        const deviceCaptureAttested = devicePullAttested || legacyDeviceAttested;
+        const captureIntegritySummary = devicePullAttested
+          ? "Capture transfer attestation: source and device temp copy matched; adb pull size and SHA-256 matched the device copy."
+          : legacyDeviceAttested
+            ? "Capture transfer attestation: legacy device stat and SHA-256 matched the received stream."
+            : "Capture transfer attestation: unavailable for this older vault; only the encrypted vault payload is being integrity-checked.";
         const missingOptionalSummary = deviceCaptureAttested && (report.missingOptionalFiles || []).length
           ? `Optional files not present: ${report.missingOptionalFiles.join(", ")}. No file entry was stored.`
           : "";

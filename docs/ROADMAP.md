@@ -1,5 +1,16 @@
 # Product roadmap
 
+## v1.0.0-rc.12 — Binary-safe ADB pull capture
+- [x] Replace binary stdout streaming with root copy to a unique temporary device file and `adb pull`
+- [x] Try `/sdcard/` first and fall back to `/data/local/tmp/` with mode `0644` when shared storage cannot accept the copy
+- [x] Compare source and device-copy size plus SHA-256 before pulling
+- [x] Compare host-pulled file size plus SHA-256 against the verified device copy before accepting bytes
+- [x] Reject all copy, transfer, metadata, or cleanup failures before encrypted snapshot creation
+- [x] Remove device-side and host-side temporary files on success and failure
+- [x] Preserve raw CR, LF, and CRLF bytes without text normalization
+- [x] Add regression tests for CR/LF-heavy binary payloads and mocked pulls with wrong size or hash
+- [x] Preserve legacy vault readability and distinguish RC12 capture attestation from RC9–RC11 metadata
+
 ## v1.0.0-rc.11 — Read-only transform diagnostics
 - [x] Authenticated in-memory snapshot inspection and SHA-256 verification
 - [x] Scan the complete file for every occurrence of the known strong signatures
@@ -27,9 +38,10 @@
 - [x] Explicitly mark WAL frame inspection as unvalidated because checksums are not verified
 - [x] Check the main database SHA-256 before and after optional WAL capture and reject changed pairs
 - [x] Check WAL SHA-256 from reads before and after the selected WAL snapshot
-- [x] Compare device-reported stat size and device-side SHA-256 against the raw ADB-exec-out bytes for every captured file
-- [x] Reject permission failures, zero-length files, shell diagnostics, truncated transfers, and transport hash mismatches
-- [x] Preserve RC8 vault compatibility while recording device capture-attestation metadata in new RC9 snapshots
+- [x] (RC9–RC11) Compare device-reported stat size and device-side SHA-256 against streamed ADB stdout bytes; superseded in RC12 by a binary-safe pull flow
+- [x] (RC12) Verify source-to-device-copy and device-copy-to-host-pull size plus SHA-256 for every captured file
+- [x] Reject permission failures, zero-length files, shell diagnostics, truncated pulls, source/copy mismatches, and transport hash mismatches
+- [x] Preserve RC8 vault compatibility while recording device capture-attestation metadata in new RC9–RC12 snapshots
 - [x] Test an actual long-running SQLite query interrupted by the progress-handler deadline
 - [x] Enable SQLite defensive/query-only modes, disable extension loading, turn off trusted_schema, and bound SQL inspection to 500 ms
 - [x] Skip SQLite quick_check when either read/write header version marks WAL mode
