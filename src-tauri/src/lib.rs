@@ -448,7 +448,8 @@ fn inspect_sqlite_wal(wal: Option<&[u8]>) -> SqliteWalDiagnostics {
     let magic_hex = bytes.get(..4).map(hex::encode);
     if bytes.len() < 32 {
         return SqliteWalDiagnostics {
-            present: true, size_bytes: bytes.len(), status: "incomplete-header".to_string(),
+            present: true, size_bytes: bytes.len(), status: "unvalidated-incomplete-header".to_string(),
+            checksum_validation: "unvalidated".to_string(),
             magic_hex, page_size_bytes: None, complete_frames: 0,
             salt_matching_frames: 0, trailing_bytes: bytes.len(),
             note: "WAL file is shorter than its 32-byte header.".to_string(),
@@ -464,7 +465,8 @@ fn inspect_sqlite_wal(wal: Option<&[u8]>) -> SqliteWalDiagnostics {
 
     if !valid_magic || version != 3_007_000 || !valid_page_size {
         return SqliteWalDiagnostics {
-            present: true, size_bytes: bytes.len(), status: "invalid-header".to_string(),
+            present: true, size_bytes: bytes.len(), status: "unvalidated-invalid-header".to_string(),
+            checksum_validation: "unvalidated".to_string(),
             magic_hex, page_size_bytes: if valid_page_size { Some(page_size) } else { None },
             complete_frames: 0, salt_matching_frames: 0, trailing_bytes: bytes.len().saturating_sub(32),
             note: format!("WAL header validation failed (magic valid: {valid_magic}; version: {version}; page size: {raw_page_size})."),
@@ -786,7 +788,7 @@ fn probe_zstd_frame(bytes: &[u8], offset: usize, remaining_budget: u64) -> ZstdP
             };
         }
     };
-    if let Err(error) = decoder.window_log_max(26) {
+    if let Err(error) = decoder.window_log_max(24) {
         return ZstdProbe {
             offset, status: "limit-hit".to_string(), frame_content_size_bytes: declared_size,
             compressed_frame_size_bytes: Some(frame_size),
@@ -799,54 +801,76 @@ fn probe_zstd_frame(bytes: &[u8], offset: usize, remaining_budget: u64) -> ZstdP
 
     let mut output = Vec::new();
     let mut limited = decoder.take(output_limit.saturating_add(1));
-    match limited.read_to_end(&mut output) {
-        Ok(_) if output.len() as u64 > output_limit => ZstdProbe {
-            offset, status: "limit-hit".to_string(), frame_content_size_bytes: declared_size,
-            compressed_frame_size_bytes: Some(frame_size),
-            trailing_bytes_after_frame: Some(payload.len() - frame_size),
-            observed_output_bytes: Some(output.len() as u64),
-            note: format!("Decoded output exceeded the remaining {} MiB cumulative per-file limit; partial output was discarded.", output_limit / (1024 * 1024)),
-            decoded: None,
-        },
-        Ok(_) => {
-            let decoded_size = output.len() as u64;
-            let status = match declared_size {
-                Some(size) if size == decoded_size => "decoded-size-matches",
-                Some(_) => "decoded-size-mismatch",
-                None => "decoded-size-unknown",
-            };
-            let note = match declared_size {
-                Some(size) if size == decoded_size => "Frame decoded completely and declared content size matches.".to_string(),
-                Some(size) => format!("Frame decoded completely, but declared content size {size} differs from actual output size {decoded_size}."),
-                None => format!("Frame decoded completely; content size was not declared. Actual output size: {decoded_size}."),
-            };
-            ZstdProbe {
-                offset, status: status.to_string(), frame_content_size_bytes: declared_size,
-                compressed_frame_size_bytes: Some(frame_size),
-                trailing_bytes_after_frame: Some(payload.len() - frame_size),
-                observed_output_bytes: Some(decoded_size), note,
-                decoded: Some(byte_diagnostics(&output)),
+    let mut chunk = [0_u8; 32 * 1024];
+    loop {
+        match limited.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read_bytes) => {
+                let next_len = output.len().saturating_add(read_bytes);
+                if next_len as u64 > output_limit {
+                    return ZstdProbe {
+                        offset, status: "limit-hit".to_string(), frame_content_size_bytes: declared_size,
+                        compressed_frame_size_bytes: Some(frame_size),
+                        trailing_bytes_after_frame: Some(payload.len() - frame_size),
+                        observed_output_bytes: Some(next_len as u64),
+                        note: format!(
+                            "Streaming output exceeded the remaining {} MiB cumulative per-file budget. Partial output was discarded.",
+                            output_limit / (1024 * 1024)
+                        ),
+                        decoded: None,
+                    };
+                }
+                if output.try_reserve_exact(read_bytes).is_err() {
+                    return ZstdProbe {
+                        offset, status: "limit-hit".to_string(), frame_content_size_bytes: declared_size,
+                        compressed_frame_size_bytes: Some(frame_size),
+                        trailing_bytes_after_frame: Some(payload.len() - frame_size),
+                        observed_output_bytes: Some(output.len() as u64),
+                        note: "Memory allocation for the bounded streaming output buffer failed. Partial output was discarded.".to_string(),
+                        decoded: None,
+                    };
+                }
+                output.extend_from_slice(&chunk[..read_bytes]);
+            }
+            Err(error) => {
+                let observed = output.len() as u64;
+                let error_text = error.to_string();
+                let is_limit = is_zstd_limit_error(&error_text);
+                let declared_mismatch = declared_size.is_some_and(|size| size != observed);
+                let (status, note) = if is_limit {
+                    ("limit-hit", format!("Zstandard decoder hit a window or memory limit: {error_text}. Partial output ({observed} bytes) was discarded."))
+                } else if declared_mismatch {
+                    ("decoded-size-mismatch", format!("Frame declares {declared_size:?} output bytes, but decoding stopped after observing {observed} bytes with an error: {error_text}. Partial output was discarded and is not treated as a decoded file."))
+                } else {
+                    ("decode-failed", format!("Frame boundary was measured, but decompression failed: {error_text}. Partial output ({observed} bytes) was discarded."))
+                };
+                return ZstdProbe {
+                    offset, status: status.to_string(), frame_content_size_bytes: declared_size,
+                    compressed_frame_size_bytes: Some(frame_size),
+                    trailing_bytes_after_frame: Some(payload.len() - frame_size),
+                    observed_output_bytes: Some(observed), note, decoded: None,
+                };
             }
         }
-        Err(error) => {
-            let observed = output.len() as u64;
-            let error_text = error.to_string();
-            let is_limit = is_zstd_limit_error(&error_text);
-            let declared_mismatch = declared_size.is_some_and(|size| size != observed);
-            let (status, note) = if is_limit {
-                ("limit-hit", format!("Zstandard decoder hit a window or memory limit: {error_text}. Partial output ({observed} bytes) was discarded."))
-            } else if declared_mismatch {
-                ("decoded-size-mismatch", format!("Frame declares {declared_size:?} output bytes, but decoding stopped after observing {observed} bytes with an error: {error_text}. Partial output was discarded and is not treated as a decoded file."))
-            } else {
-                ("decode-failed", format!("Frame boundary was measured, but decompression failed: {error_text}. Partial output ({observed} bytes) was discarded."))
-            };
-            ZstdProbe {
-                offset, status: status.to_string(), frame_content_size_bytes: declared_size,
-                compressed_frame_size_bytes: Some(frame_size),
-                trailing_bytes_after_frame: Some(payload.len() - frame_size),
-                observed_output_bytes: Some(observed), note, decoded: None,
-            }
-        }
+    }
+
+    let decoded_size = output.len() as u64;
+    let status = match declared_size {
+        Some(size) if size == decoded_size => "decoded-size-matches",
+        Some(_) => "decoded-size-mismatch",
+        None => "decoded-size-unknown",
+    };
+    let note = match declared_size {
+        Some(size) if size == decoded_size => "Frame decoded completely and declared content size matches.".to_string(),
+        Some(size) => format!("Frame decoded completely, but declared content size {size} differs from actual output size {decoded_size}."),
+        None => format!("Frame decoded completely; content size was not declared. Actual output size: {decoded_size}."),
+    };
+    ZstdProbe {
+        offset, status: status.to_string(), frame_content_size_bytes: declared_size,
+        compressed_frame_size_bytes: Some(frame_size),
+        trailing_bytes_after_frame: Some(payload.len() - frame_size),
+        observed_output_bytes: Some(decoded_size), note,
+        decoded: Some(byte_diagnostics(&output)),
     }
 }
 
