@@ -916,6 +916,46 @@ pub fn run() {
 mod tests {
     use super::*;
 
+    fn rewrite_zstd_content_size(frame: &mut Vec<u8>, desired_size: u32) {
+        assert!(frame.len() >= 6);
+        let descriptor = frame[4];
+        let single_segment = descriptor & 0x20 != 0;
+        let old_flag = descriptor >> 6;
+        let old_fcs_len = match old_flag {
+            0 if single_segment => 1,
+            0 => 0,
+            1 => 2,
+            2 => 4,
+            _ => 8,
+        };
+        let dict_len = match descriptor & 0x03 {
+            0 => 0,
+            1 => 1,
+            2 => 2,
+            _ => 4,
+        };
+        let fcs_offset = 5 + usize::from(!single_segment) + dict_len;
+        frame.splice(fcs_offset..fcs_offset + old_fcs_len, desired_size.to_le_bytes());
+        frame[4] = (descriptor & 0x3f) | 0x80;
+    }
+
+    fn make_windowed_zstd_frame(window_log: u32, payload: &[u8]) -> Vec<u8> {
+        let mut encoder = zstd::stream::Encoder::new(Vec::new(), 1).expect("create streaming encoder");
+        encoder.window_log(window_log).expect("set encoder window");
+        encoder.write_all(payload).expect("write streaming payload");
+        encoder.finish().expect("finish streaming frame")
+    }
+
+    fn seeded_bytes(length: usize, seed: u64) -> Vec<u8> {
+        let mut state = seed;
+        (0..length).map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 24) as u8
+        }).collect()
+    }
+
     #[test]
     fn accepts_ldplayer_emulator_serials() {
         assert!(is_allowed_emulator_serial("emulator-5556"));
@@ -993,7 +1033,7 @@ mod tests {
         bytes.extend_from_slice(&compressed);
         bytes.extend_from_slice(b"trailing-footer");
         let probe = probe_zstd_frame(&bytes, frame_offset, MAX_DECOMPRESSED_BYTES);
-        assert_eq!(probe.status, "decoded-cleanly");
+        assert_eq!(probe.status, "decoded-size-matches");
         assert_eq!(probe.frame_content_size_bytes, Some(original.len() as u64));
         assert_eq!(probe.compressed_frame_size_bytes, Some(compressed.len()));
         assert_eq!(probe.trailing_bytes_after_frame, Some(b"trailing-footer".len()));
@@ -1018,7 +1058,7 @@ mod tests {
         assert_eq!(find_signature_offsets(&bytes, ZSTD_MAGIC), vec![first_offset, second_offset]);
         assert_eq!(probes.len(), 2);
         assert_eq!(skipped, 0);
-        assert!(probes.iter().all(|probe| probe.status == "decoded-cleanly"));
+        assert!(probes.iter().all(|probe| probe.status == "decoded-size-matches"));
         assert!(header_words.iter().any(|word| word.contains("matches compressed Zstandard frame length")));
     }
 
@@ -1037,9 +1077,128 @@ mod tests {
         assert_eq!(skipped, 0);
         assert_eq!(probes.len(), 1);
         assert_eq!(probes[0].offset, frame_offset);
-        assert_eq!(probes[0].status, "decoded-cleanly");
+        assert_eq!(probes[0].status, "decoded-size-matches");
         assert!(header_words.iter().any(|word| word.contains("matches compressed Zstandard frame length")));
         assert!(decoded_matches.iter().any(|word| word.contains("+0x08 equals decoded size")));
+    }
+
+    #[test]
+    fn false_positive_zstd_magic_is_signature_only() {
+        let mut bytes = ZSTD_MAGIC.to_vec();
+        bytes.extend_from_slice(b"not a zstandard frame: arbitrary garbage");
+        let probe = probe_zstd_frame(&bytes, 0, MAX_DECOMPRESSED_BYTES);
+        assert_eq!(probe.status, "signature-only");
+        assert!(probe.decoded.is_none());
+        assert!(probe.observed_output_bytes.is_none());
+    }
+
+    #[test]
+    fn truncated_zstd_frame_is_incomplete_and_never_returns_partial_output() {
+        let original = seeded_bytes(32 * 1024, 0x1234_5678);
+        let frame = zstd::stream::encode_all(Cursor::new(&original), 1).expect("encode frame");
+        let truncated = &frame[..frame.len() - 1];
+        let probe = probe_zstd_frame(truncated, 0, MAX_DECOMPRESSED_BYTES);
+        assert_eq!(probe.status, "incomplete");
+        assert!(probe.decoded.is_none());
+    }
+
+    #[test]
+    fn declared_content_size_mismatches_are_reported_without_exposing_partial_output() {
+        let small_actual = seeded_bytes(2 * 1024, 0xabc1);
+        let mut small_frame = zstd::stream::encode_all(Cursor::new(&small_actual), 1).expect("encode small frame");
+        rewrite_zstd_content_size(&mut small_frame, 1024 * 1024);
+        let small_probe = probe_zstd_frame(&small_frame, 0, MAX_DECOMPRESSED_BYTES);
+        assert_eq!(small_probe.frame_content_size_bytes, Some(1024 * 1024));
+        assert_eq!(small_probe.status, "decoded-size-mismatch");
+        assert!(small_probe.decoded.is_none());
+
+        let large_actual = seeded_bytes(1024 * 1024, 0xabc2);
+        let mut large_frame = zstd::stream::encode_all(Cursor::new(&large_actual), 1).expect("encode large frame");
+        rewrite_zstd_content_size(&mut large_frame, 2 * 1024);
+        let large_probe = probe_zstd_frame(&large_frame, 0, MAX_DECOMPRESSED_BYTES);
+        assert_eq!(large_probe.frame_content_size_bytes, Some(2 * 1024));
+        assert_eq!(large_probe.status, "decoded-size-mismatch");
+        assert!(large_probe.decoded.is_none());
+    }
+
+    #[test]
+    fn declared_output_over_limit_is_a_limit_hit_not_a_decode_failure() {
+        let mut frame = zstd::stream::encode_all(Cursor::new(b"tiny payload"), 1).expect("encode frame");
+        rewrite_zstd_content_size(&mut frame, (MAX_DECOMPRESSED_BYTES + 1) as u32);
+        let probe = probe_zstd_frame(&frame, 0, MAX_DECOMPRESSED_BYTES);
+        assert_eq!(probe.status, "limit-hit");
+        assert_eq!(probe.frame_content_size_bytes, Some(MAX_DECOMPRESSED_BYTES + 1));
+        assert!(probe.decoded.is_none());
+    }
+
+    #[test]
+    fn oversized_zstd_window_is_a_limit_hit() {
+        let frame = make_windowed_zstd_frame(27, &seeded_bytes(1024 * 1024, 0x7777));
+        let probe = probe_zstd_frame(&frame, 0, MAX_DECOMPRESSED_BYTES);
+        assert_eq!(probe.status, "limit-hit");
+        assert!(probe.decoded.is_none());
+    }
+
+    #[test]
+    fn nested_zstd_magic_is_skipped_but_a_following_frame_is_still_decoded() {
+        let mut plain = seeded_bytes(128 * 1024, 0xfeed_beef);
+        plain[32 * 1024..32 * 1024 + 4].copy_from_slice(ZSTD_MAGIC);
+        let first = zstd::stream::encode_all(Cursor::new(&plain), 1).expect("encode outer frame");
+        assert!(find_signature_offsets(&first, ZSTD_MAGIC).len() >= 2);
+        let second_payload = b"second independent frame at the first frame boundary";
+        let second = zstd::stream::encode_all(Cursor::new(second_payload), 1).expect("encode second frame");
+        let second_offset = first.len();
+        let mut joined = first;
+        joined.extend_from_slice(&second);
+
+        let (_, _, _, attempted, skipped_by_cap, overlapping_skipped, probes) = inspect_bytes(&joined);
+        assert_eq!(attempted, 2);
+        assert_eq!(skipped_by_cap, 0);
+        assert!(overlapping_skipped >= 1);
+        let nested = probes.iter().find(|p| p.status == "overlapping-signature-skipped");
+        assert!(nested.is_some());
+        let following = probes.iter().find(|p| p.offset == second_offset).expect("following frame should be attempted");
+        assert_eq!(following.status, "decoded-size-matches");
+    }
+
+    #[test]
+    fn zstd_candidate_budget_caps_real_attempts_at_32() {
+        let mut joined = Vec::new();
+        for index in 0..(MAX_ZSTD_PROBES + 8) {
+            let payload = format!("separate zstd frame number {index}");
+            joined.extend_from_slice(
+                &zstd::stream::encode_all(Cursor::new(payload.as_bytes()), 1).expect("encode frame")
+            );
+        }
+        let (_, _, _, attempted, skipped_by_cap, overlapping_skipped, probes) = inspect_bytes(&joined);
+        assert_eq!(attempted, MAX_ZSTD_PROBES);
+        assert_eq!(skipped_by_cap, 8);
+        assert_eq!(overlapping_skipped, 0);
+        assert_eq!(probes.len(), MAX_ZSTD_PROBES);
+    }
+
+    #[test]
+    fn scanner_handles_signatures_straddling_64k_and_at_the_final_four_bytes() {
+        let mut bytes = vec![0_u8; 70 * 1024];
+        let across_boundary = 64 * 1024 - 2;
+        let at_end = bytes.len() - 4;
+        bytes[across_boundary..across_boundary + 4].copy_from_slice(ZSTD_MAGIC);
+        bytes[at_end..].copy_from_slice(ZSTD_MAGIC);
+        assert_eq!(find_signature_offsets(&bytes, ZSTD_MAGIC), vec![across_boundary, at_end]);
+    }
+
+    #[test]
+    fn deterministic_random_bytes_never_panic_the_scanner_or_decoder_wrapper() {
+        for iteration in 0..256_u64 {
+            let length = (iteration as usize * 37) % 768;
+            let mut bytes = seeded_bytes(length, iteration.wrapping_add(0x9e37_79b9));
+            if bytes.len() >= 8 && iteration % 2 == 0 {
+                let offset = (iteration as usize * 19) % (bytes.len() - 3);
+                bytes[offset..offset + 4].copy_from_slice(ZSTD_MAGIC);
+            }
+            let result = std::panic::catch_unwind(|| inspect_bytes(&bytes));
+            assert!(result.is_ok(), "inspection panicked on deterministic fuzz case {iteration}");
+        }
     }
 
     #[test]
