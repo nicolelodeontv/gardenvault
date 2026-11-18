@@ -165,6 +165,12 @@ struct InspectedFile {
     sha256: String,
     detected_format: String,
     signature_hex: String,
+    entropy_bits_per_byte: f64,
+    entropy_assessment: String,
+    printable_ascii_percent: f64,
+    zero_byte_percent: f64,
+    unique_byte_values: usize,
+    embedded_signatures: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -190,6 +196,63 @@ fn decrypt_vault(passphrase: &str, input: &[u8]) -> Result<Vec<u8>, String> {
         .map_err(|_| "Could not initialize AES-256-GCM".to_string())?;
     cipher.decrypt(Nonce::from_slice(&nonce), &input[35..])
         .map_err(|_| "Authentication failed: wrong passphrase or damaged backup".to_string())
+}
+
+fn byte_entropy(bytes: &[u8]) -> f64 {
+    if bytes.is_empty() { return 0.0; }
+    let mut counts = [0_usize; 256];
+    for byte in bytes { counts[*byte as usize] += 1; }
+    let length = bytes.len() as f64;
+    counts.iter().filter(|count| **count > 0).fold(0.0, |entropy, count| {
+        let probability = *count as f64 / length;
+        entropy - probability * probability.log2()
+    })
+}
+
+fn byte_percent(bytes: &[u8], predicate: impl Fn(u8) -> bool) -> f64 {
+    if bytes.is_empty() { return 0.0; }
+    let matching = bytes.iter().filter(|byte| predicate(**byte)).count();
+    (matching as f64 * 100.0) / bytes.len() as f64
+}
+
+fn unique_byte_count(bytes: &[u8]) -> usize {
+    let mut seen = [false; 256];
+    for byte in bytes { seen[*byte as usize] = true; }
+    seen.iter().filter(|value| **value).count()
+}
+
+fn entropy_assessment(entropy: f64) -> String {
+    if entropy >= 7.75 {
+        "Very high entropy; encryption or compression are both plausible".to_string()
+    } else if entropy >= 6.5 {
+        "High entropy; compression, encoding, or encryption are possible".to_string()
+    } else {
+        "Lower entropy; structured binary data may be present".to_string()
+    }
+}
+
+fn find_embedded_signatures(bytes: &[u8]) -> Vec<String> {
+    const SCAN_LIMIT: usize = 64 * 1024;
+    let sample = &bytes[..bytes.len().min(SCAN_LIMIT)];
+    let signatures: [(&str, &[u8]); 9] = [
+        ("SQLite", b"SQLite format 3\\0"),
+        ("ZIP", b"PK\\x03\\x04"),
+        ("GZIP", b"\\x1f\\x8b"),
+        ("Zstandard", b"\\x28\\xb5\\x2f\\xfd"),
+        ("LZ4 frame", b"\\x04\\x22\\x4d\\x18"),
+        ("PNG", b"\\x89PNG\\r\\n\\x1a\\n"),
+        ("JPEG", b"\\xff\\xd8\\xff"),
+        ("zlib candidate", b"\\x78\\x9c"),
+        ("zlib candidate", b"\\x78\\xda"),
+    ];
+    let mut found = Vec::new();
+    for (label, signature) in signatures {
+        if let Some(offset) = sample.windows(signature.len()).position(|window| window == signature) {
+            found.push(format!("{label} signature at offset 0x{offset:X}"));
+        }
+    }
+    if found.is_empty() { found.push("No known signatures found in first 64 KiB".to_string()); }
+    found
 }
 
 fn detect_file_format(bytes: &[u8]) -> String {
@@ -393,6 +456,12 @@ fn inspect_vault(app: AppHandle, file_name: String, passphrase: String) -> Resul
             sha256: file.sha256,
             detected_format: detect_file_format(&bytes),
             signature_hex,
+            entropy_bits_per_byte: byte_entropy(&bytes),
+            entropy_assessment: entropy_assessment(byte_entropy(&bytes)),
+            printable_ascii_percent: byte_percent(&bytes, |b| (0x20..=0x7e).contains(&b)),
+            zero_byte_percent: byte_percent(&bytes, |b| b == 0),
+            unique_byte_values: unique_byte_count(&bytes),
+            embedded_signatures: find_embedded_signatures(&bytes),
         });
     }
     if inspected.is_empty() {
@@ -529,6 +598,12 @@ mod tests {
         assert_eq!(detect_file_format(b"SQLite format 3\0rest"), "SQLite 3 database");
         assert_eq!(detect_file_format(b"PK\x03\x04archive"), "ZIP archive");
         assert_eq!(detect_file_format(b"not a known header"), "Unknown binary format");
+        assert_eq!(byte_entropy(&[0_u8; 32]), 0.0);
+        let all_values = (0_u8..=255).collect::<Vec<_>>();
+        assert!((byte_entropy(&all_values) - 8.0).abs() < 0.0001);
+        assert_eq!(unique_byte_count(&all_values), 256);
+        assert!(find_embedded_signatures(b"prefix\\x28\\xb5\\x2f\\xfdpayload").iter().any(|s| s.contains("Zstandard")));
+        assert!(entropy_assessment(7.99).contains("encryption or compression"));
     }
 
     #[test]
