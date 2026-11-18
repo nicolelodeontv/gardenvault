@@ -234,7 +234,7 @@ fn entropy_assessment(entropy: f64) -> String {
 fn find_embedded_signatures(bytes: &[u8]) -> Vec<String> {
     const SCAN_LIMIT: usize = 64 * 1024;
     let sample = &bytes[..bytes.len().min(SCAN_LIMIT)];
-    let signatures: [(&str, &[u8]); 9] = [
+    let signatures: [(&str, &[u8]); 10] = [
         ("SQLite", b"SQLite format 3\0"),
         ("Playrix PLXE wrapper", b"PLXE"),
         ("ZIP", b"PK\x03\x04"),
