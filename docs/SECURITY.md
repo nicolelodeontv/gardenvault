@@ -26,3 +26,7 @@ Never share the vault passphrase or commit `.gvault` files to Git.
 
 ## Snapshot inspection
 Authenticated inspection decrypts the selected vault in memory, validates each embedded file's size and SHA-256 digest, and computes only local statistics and signature matches. It does not write extracted save files, change the original game directory, or transmit data. Entropy is an indicator only: high entropy can be caused by encryption or compression and is not proof of either.
+## Snapshot inspection
+Authenticated inspection decrypts the selected vault in memory, validates each embedded file's size and SHA-256 digest, and computes local diagnostics only. The signature scan reads the complete bounded captured file and reports all known strong-signature offsets. Zstandard candidates are decoded one at a time in streaming mode, with a 64 MiB decoded-output ceiling and a maximum of 32 candidate attempts per file. Decoded content is summarized in memory and is not written to disk.
+
+Entropy, signature hits, and PLXE header fields are clues, not proof of a particular format. High entropy can come from compression or encryption. A Zstandard result is labelled successful only after a complete frame can be sized and its streaming decode finishes successfully. No inspection path writes to Gardenscapes or transmits save data.
