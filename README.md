@@ -5,7 +5,7 @@ GardenVault is a local-first Windows desktop utility for reading Gardenscapes pr
 ## v1.0.0-rc.8 — Read-only binary forensics
 
 - Detect connected LDPlayer emulators through ADB and verify the Gardenscapes package and root availability.
-- Capture the configured `GameData.db` and `GameData.db.bak` files after the game process exits.
+- Capture `GameData.db` and `GameData.db.bak` after confirming the game process is stopped. If `GameData.db-wal` exists, capture it too and hash the main database immediately before and after the WAL read; reject the snapshot if the main-file hash changes. This detects a torn pair but is not a filesystem-atomic snapshot.
 - Encrypt snapshots locally with Argon2id + AES-256-GCM and preserve SHA-256 integrity metadata.
 - Browse encrypted snapshots and export byte-identical encrypted copies through the Windows Save As dialog.
 - Decrypt a selected snapshot only in memory after passphrase entry and verify embedded file size and SHA-256.
@@ -14,11 +14,11 @@ GardenVault is a local-first Windows desktop utility for reading Gardenscapes pr
 - Parse little-endian u32 words following each PLXE magic and compare plausible lengths with the file, candidate payload, and successfully decoded output sizes.
 - Attempt bounded streaming Zstandard decoding at candidate offsets. Report explicit statuses (`signature-only`, `incomplete`, `decode-failed`, `limit-hit`, `decoded-size-matches`, and `decoded-size-mismatch`), frame offsets, declared/observed sizes, compressed frame sizes, trailing bytes, and diagnostics for complete decoded output.
 - Skip candidate magic that falls inside an already measured frame, while still attempting a new frame exactly at the prior frame boundary.
-- Limit aggregate decoded output to 64 MiB per file, cap the Zstandard back-reference window at 64 MiB, and attempt at most 32 candidate offsets per file. Inspection never extracts files to disk or writes to the game directory.
+- Report Zstandard skippable frames (magic range `0x184D2A50`–`0x184D2A5F`) separately; they are metadata frames and do not count as normal decode candidates.\n- Stream decoded output through a 32 KiB scratch buffer and grow the retained output only as bytes arrive. The nominal 64 MiB decompression working-set budget is split into 40 MiB retained output, a 16 MiB Zstandard window cap, and 8 MiB decoder/scratch headroom. The cumulative output cap and 32-real-attempt limit apply per file. Inspection never extracts files to disk or writes to the game directory.
 
 ## Compatibility limits
 
-The supplied `GameData.db` has not yet been confirmed as SQLite, a PLXE container, or any other known format. SQLite inspection only runs after the standard SQLite header is detected. A PLXE/Zstandard signature match is only a candidate until the frame validates and decompresses cleanly. High entropy alone does not prove encryption because compressed data can also have high entropy.
+The supplied `GameData.db` has not yet been confirmed as SQLite, a PLXE container, or any other known format. SQLite inspection only runs after the standard SQLite header is detected. Defensive mode, query-only mode, disabled extension loading, `trusted_schema=OFF`, and a 500 ms SQLite progress-handler budget are applied. If either SQLite header format-version byte (18 or 19) is `2`, the report says “WAL-mode database, main file only, may be stale” and skips `quick_check`. A PLXE/Zstandard signature match is only a candidate until the frame validates and decompresses cleanly. High entropy alone does not prove encryption because compressed data can also have high entropy.
 
 Even a successfully decoded local database would not prove it is the authoritative record for coins, boosters, or level progress. Gardenscapes can synchronize progress with Playrix services. Editing, restore-to-game, and live Apply remain disabled until the file structure, integrity rules, and relationship to server-synced progress are independently verified.
 
@@ -26,7 +26,7 @@ A community reverse-engineering post documents PLXE + Zstandard wrapping for cer
 
 Playrix says progress is automatically saved while connected to the internet: [Playrix support](https://playrix.helpshift.com/hc/en/5-gardenscapes/faq/718-saving-game-progress/).
 
-## Build on Windows
+## Verification status\n\n**RC8 is not verified yet.** The Windows native Rust test suite must pass in full and the Windows x64 installer must complete successfully before this build is treated as ready. A successful frontend test run alone is not sufficient.\n\n## Build on Windows
 
 Requirements: Node.js 22+, Rust stable with the MSVC target, Visual Studio C++ Build Tools + Windows SDK, and NSIS.
 
