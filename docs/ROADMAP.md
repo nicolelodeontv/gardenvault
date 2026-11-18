@@ -17,19 +17,22 @@
 - [x] Skip nested/overlapping frame signatures without skipping the next frame at a true frame boundary
 - [x] Add 256 deterministic randomized scanner/decoder wrapper cases
 - [x] Open SQLite images read-only in memory and run schema/quick-check queries
-- [x] Capture the fixed companion WAL file if present, hash-check both the main file and WAL file around WAL capture, and inspect the WAL header/frame layout without replay
+- [x] Capture the fixed companion WAL file only when present; absent WAL creates no snapshot file or metadata entry
 - [x] Detect Zstandard skippable-frame magic separately without feeding it to the normal decoder
 - [x] Stream decompressed bytes through a fixed 32 KiB buffer and enforce a 20 MiB retained output + 20 MiB SQLite copy + 16 MiB window + 8 MiB headroom budget
 - [x] Explicitly mark WAL frame inspection as unvalidated because checksums are not verified
 - [x] Check the main database SHA-256 before and after optional WAL capture and reject changed pairs
 - [x] Check WAL SHA-256 from reads before and after the selected WAL snapshot
+- [x] Compare device-reported stat size and device-side SHA-256 against the raw ADB-exec-out bytes for every captured file
+- [x] Reject permission failures, zero-length files, shell diagnostics, truncated transfers, and transport hash mismatches
+- [x] Preserve RC8 vault compatibility while recording device capture-attestation metadata in new RC9 snapshots
 - [x] Test an actual long-running SQLite query interrupted by the progress-handler deadline
 - [x] Enable SQLite defensive/query-only modes, disable extension loading, turn off trusted_schema, and bound SQL inspection to 500 ms
 - [x] Skip SQLite quick_check when either read/write header version marks WAL mode
 - [x] Keep all inspection read-only and in memory, with bounded decompression output and a 500 ms SQLite SQL-query budget; timeout is reported as inconclusive rather than corruption
 
 ## Next milestones
-1. Interpret the next RC8 report and determine whether any actual Zstandard frame validates.
+1. Interpret the next RC9 report and determine whether any actual Zstandard frame validates.
 2. Capture a second snapshot after a small, ordinary in-game progress change and compare them byte-for-byte, including header and tail regions.
 3. Determine whether the local file is a cache, local checkpoint, or meaningful progress store; do not assume it is server-authoritative.
 4. Implement a parser only after the container and integrity rules are verified.
