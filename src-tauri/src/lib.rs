@@ -1839,8 +1839,8 @@ mod tests {
     #[test]
     fn sqlite_progress_handler_interrupts_long_query_as_inconclusive_time_budget() {
         let connection = Connection::open_in_memory().expect("open timeout-test SQLite connection");
-        let expired_deadline = Instant::now() - Duration::from_millis(1);
-        connection.progress_handler(1_000, Some(move || Instant::now() >= expired_deadline));
+        let deadline = Instant::now() + Duration::from_millis(SQLITE_QUERY_BUDGET_MS);
+        connection.progress_handler(1_000, Some(move || Instant::now() >= deadline));
 
         // This recursive aggregate is intentionally long-running without the handler.
         let result = connection.query_row(
