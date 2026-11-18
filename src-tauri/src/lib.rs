@@ -236,6 +236,7 @@ fn find_embedded_signatures(bytes: &[u8]) -> Vec<String> {
     let sample = &bytes[..bytes.len().min(SCAN_LIMIT)];
     let signatures: [(&str, &[u8]); 9] = [
         ("SQLite", b"SQLite format 3\0"),
+        ("Playrix PLXE wrapper", b"PLXE"),
         ("ZIP", b"PK\x03\x04"),
         ("GZIP", b"\x1f\x8b"),
         ("Zstandard", b"\x28\xb5\x2f\xfd"),
@@ -266,6 +267,7 @@ fn detect_file_format(bytes: &[u8]) -> String {
     }
     if trimmed.starts_with(b"<?xml") || trimmed.starts_with(b"<") { return "XML-like text".to_string(); }
     if bytes.starts_with(b"UnityFS") { return "UnityFS asset bundle".to_string(); }
+    if bytes.starts_with(b"PLXE") { return "Playrix PLXE container (payload not decoded)".to_string(); }
     if bytes.starts_with(b"ENC") { return "Unknown binary (ENC prefix)".to_string(); }
     "Unknown binary format".to_string()
 }
@@ -599,6 +601,8 @@ mod tests {
         assert_eq!(detect_file_format(b"SQLite format 3\0rest"), "SQLite 3 database");
         assert_eq!(detect_file_format(b"PK\x03\x04archive"), "ZIP archive");
         assert_eq!(detect_file_format(b"not a known header"), "Unknown binary format");
+        assert_eq!(detect_file_format(b"PLXE\\x04\\x00\\x00\\x00"), "Playrix PLXE container (payload not decoded)");
+        assert!(find_embedded_signatures(b"prefixPLXEpayload").iter().any(|s| s.contains("PLXE")));
         assert_eq!(byte_entropy(&[0_u8; 32]), 0.0);
         let all_values = (0_u8..=255).collect::<Vec<_>>();
         assert!((byte_entropy(&all_values) - 8.0).abs() < 0.0001);
