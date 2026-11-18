@@ -962,7 +962,7 @@ mod tests {
         assert_eq!(probes.len(), 2);
         assert_eq!(skipped, 0);
         assert!(probes.iter().all(|probe| probe.status == "decoded-cleanly"));
-        assert!(header_words.iter().any(|word| word.contains("matches bytes from Zstandard candidate to EOF")));
+        assert!(header_words.iter().any(|word| word.contains("matches compressed Zstandard frame length")));
     }
 
     #[test]
