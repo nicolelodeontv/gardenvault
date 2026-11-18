@@ -1,0 +1,137 @@
+name: GardenVault RC2 Windows bootstrap build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - release/rc2-windows-build
+    paths:
+      - '.bootstrap/**'
+      - '.github/workflows/rc2-bootstrap.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gardenvault-rc2-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bootstrap-and-build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out private repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Expand the reviewed GardenVault source bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bundle = Join-Path $env:GITHUB_WORKSPACE '.bootstrap/GardenVault-v1.0.0-rc2.zip.b64'
+          if (-not (Test-Path -LiteralPath $bundle)) {
+            throw "Source bundle missing: $bundle"
+          }
+          $encoded = (Get-Content -LiteralPath $bundle -Raw) -replace '\\s', ''
+          $zipPath = Join-Path $env:RUNNER_TEMP 'GardenVault-v1.0.0-rc2.zip'
+          [IO.File]::WriteAllBytes($zipPath, [Convert]::FromBase64String($encoded))
+          $expandPath = Join-Path $env:RUNNER_TEMP 'GardenVaultSource'
+          Expand-Archive -LiteralPath $zipPath -DestinationPath $expandPath -Force
+          $sourceRoot = Join-Path $expandPath 'GardenVault-v1.0.0-rc2'
+          foreach ($required in @('package.json', 'src-tauri/Cargo.toml', 'src-tauri/src/lib.rs', '.github/workflows/build-windows.yml')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot $required))) {
+              throw "Required source file missing: $required"
+            }
+          }
+          Get-ChildItem -LiteralPath $sourceRoot -Force | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination $env:GITHUB_WORKSPACE -Recurse -Force
+          }
+          Remove-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE '.bootstrap') -Recurse -Force
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 1) {
+            git commit -m 'build: add GardenVault v1.0.0-rc.2 source'
+            git push origin "HEAD:$env:GITHUB_REF_NAME"
+          } elseif ($LASTEXITCODE -ne 0) {
+            throw 'Could not inspect staged source changes.'
+          }
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.16.0'
+          cache: npm
+
+      - name: Set up Rust and Windows MSVC target
+        uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      - name: Ensure NSIS is available
+        shell: pwsh
+        run: |
+          if (-not (Get-Command makensis.exe -ErrorAction SilentlyContinue)) {
+            choco install nsis --no-progress -y
+          }
+          if (-not (Get-Command makensis.exe -ErrorAction SilentlyContinue)) {
+            throw 'NSIS is required to create the GardenVault installer.'
+          }
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Run frontend and security tests
+        run: npm test
+
+      - name: Check Rust formatting
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+
+      - name: Run Rust tests
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: Build GardenVault Windows app and NSIS installer
+        run: npm run tauri:build
+
+      - name: Verify application and installer exist
+        shell: pwsh
+        run: |
+          $app = 'src-tauri/target/release/gardenvault.exe'
+          $installerDir = 'src-tauri/target/release/bundle/nsis'
+          if (-not (Test-Path -LiteralPath $app)) {
+            throw 'GardenVault application executable was not generated.'
+          }
+          $installers = @(Get-ChildItem -LiteralPath $installerDir -Filter '*-setup.exe' -File -ErrorAction SilentlyContinue)
+          if ($installers.Count -eq 0) {
+            throw 'GardenVault NSIS setup executable was not generated.'
+          }
+          Get-FileHash -Algorithm SHA256 $app
+          $installers | ForEach-Object {
+            Get-FileHash -Algorithm SHA256 $_.FullName
+            Write-Host "Installer ready: $($_.FullName)"
+          }
+          Get-AuthenticodeSignature -FilePath $installers[0].FullName | Format-List Status,StatusMessage,SignerCertificate
+
+      - name: Upload unsigned Windows build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GardenVault-v1.0.0-rc.2-Windows-x64-unsigned
+          path: |
+            src-tauri/target/release/gardenvault.exe
+            src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+          retention-days: 30
