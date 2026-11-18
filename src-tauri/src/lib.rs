@@ -1200,6 +1200,9 @@ mod tests {
         );
         assert!(root_cat_command("../other.db").is_err());
         assert!(root_cat_command("GameData.db; id").is_err());
+        assert_eq!(root_cat_command("GameData.db-wal").expect("WAL allowlisted"), "su -c 'cat /data/user/0/com.playrix.gardenscapes/Documents/GameData.db-wal'");
+        assert_eq!(root_test_file_command("GameData.db-wal").expect("WAL test allowlisted"), "su -c 'test -f /data/user/0/com.playrix.gardenscapes/Documents/GameData.db-wal'");
+        assert!(root_test_file_command("GameData.db.bak").is_err());
     }
 
     #[test]
@@ -1418,6 +1421,61 @@ mod tests {
             let result = std::panic::catch_unwind(|| inspect_bytes(&bytes));
             assert!(result.is_ok(), "inspection panicked on deterministic fuzz case {iteration}");
         }
+    }
+
+    #[test]
+    fn sqlite_images_are_opened_read_only_and_wal_headers_are_checked() {
+        let source = Connection::open_in_memory().expect("open synthetic SQLite database");
+        source.execute_batch("CREATE TABLE test_items(id INTEGER PRIMARY KEY, value TEXT); INSERT INTO test_items(value) VALUES ('unchanged');")
+            .expect("create synthetic schema");
+        let serialized = source.serialize(rusqlite::MAIN_DB).expect("serialize synthetic SQLite");
+        let sqlite_bytes = serialized.to_vec();
+        let original_hash = hash_hex(&sqlite_bytes);
+
+        let report = inspect_sqlite_readonly(&sqlite_bytes).expect("SQLite signature should be inspected");
+        assert!(report.opened_read_only);
+        assert_eq!(report.quick_check.as_deref(), Some("ok"));
+        assert!(report.schema_objects.iter().any(|name| name == "test_items"));
+        assert_eq!(hash_hex(&sqlite_bytes), original_hash);
+
+        let page_size = 512_u32;
+        let mut wal = vec![0_u8; 32 + 24 + page_size as usize];
+        wal[0..4].copy_from_slice(&0x377f_0682_u32.to_be_bytes());
+        wal[4..8].copy_from_slice(&3_007_000_u32.to_be_bytes());
+        wal[8..12].copy_from_slice(&page_size.to_be_bytes());
+        wal[16..20].copy_from_slice(&[1, 2, 3, 4]);
+        wal[20..24].copy_from_slice(&[5, 6, 7, 8]);
+        let frame_start = 32;
+        wal[frame_start..frame_start + 4].copy_from_slice(&1_u32.to_be_bytes());
+        wal[frame_start + 8..frame_start + 12].copy_from_slice(&[1, 2, 3, 4]);
+        wal[frame_start + 12..frame_start + 16].copy_from_slice(&[5, 6, 7, 8]);
+
+        let wal_report = inspect_sqlite_wal(Some(&wal));
+        assert!(wal_report.present);
+        assert_eq!(wal_report.status, "valid-header-frames");
+        assert_eq!(wal_report.page_size_bytes, Some(512));
+        assert_eq!(wal_report.complete_frames, 1);
+        assert_eq!(wal_report.salt_matching_frames, 1);
+        assert_eq!(wal_report.trailing_bytes, 0);
+
+        wal.push(0xAA);
+        let tail_report = inspect_sqlite_wal(Some(&wal));
+        assert_eq!(tail_report.status, "frames-or-tail-need-review");
+        assert_eq!(tail_report.trailing_bytes, 1);
+    }
+
+    #[test]
+    fn sqlite_wal_mode_image_is_not_opened_without_replaying_wal() {
+        let source = Connection::open_in_memory().expect("open SQLite database");
+        source.execute_batch("CREATE TABLE t(value INTEGER);").expect("create table");
+        let serialized = source.serialize(rusqlite::MAIN_DB).expect("serialize");
+        let mut bytes = serialized.to_vec();
+        bytes[18] = 2;
+        bytes[19] = 2;
+        let report = inspect_sqlite_readonly(&bytes).expect("SQLite header");
+        assert!(!report.opened_read_only);
+        assert_eq!(report.status, "wal-mode-needs-replay");
+        assert!(report.note.contains("not replayed"));
     }
 
     #[test]
