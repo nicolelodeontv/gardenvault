@@ -407,6 +407,141 @@ fn plxe_header_decoded_size_matches(bytes: &[u8], plxe_offsets: &[usize], zstd_o
     matches
 }
 
+fn inspect_sqlite_wal(wal: Option<&[u8]>) -> SqliteWalDiagnostics {
+    let Some(bytes) = wal else {
+        return SqliteWalDiagnostics {
+            present: false, size_bytes: 0, status: "not-present".to_string(),
+            magic_hex: None, page_size_bytes: None, complete_frames: 0,
+            salt_matching_frames: 0, trailing_bytes: 0,
+            note: "No companion GameData.db-wal file was captured.".to_string(),
+        };
+    };
+
+    let magic_hex = bytes.get(..4).map(hex::encode);
+    if bytes.len() < 32 {
+        return SqliteWalDiagnostics {
+            present: true, size_bytes: bytes.len(), status: "incomplete-header".to_string(),
+            magic_hex, page_size_bytes: None, complete_frames: 0,
+            salt_matching_frames: 0, trailing_bytes: bytes.len(),
+            note: "WAL file is shorter than its 32-byte header.".to_string(),
+        };
+    }
+
+    let magic = u32::from_be_bytes(bytes[0..4].try_into().unwrap_or_default());
+    let version = u32::from_be_bytes(bytes[4..8].try_into().unwrap_or_default());
+    let raw_page_size = u32::from_be_bytes(bytes[8..12].try_into().unwrap_or_default()) as usize;
+    let page_size = if raw_page_size == 1 { 65_536 } else { raw_page_size };
+    let valid_magic = magic == 0x377f_0682 || magic == 0x377f_0683;
+    let valid_page_size = (512..=65_536).contains(&page_size) && page_size.is_power_of_two();
+
+    if !valid_magic || version != 3_007_000 || !valid_page_size {
+        return SqliteWalDiagnostics {
+            present: true, size_bytes: bytes.len(), status: "invalid-header".to_string(),
+            magic_hex, page_size_bytes: if valid_page_size { Some(page_size) } else { None },
+            complete_frames: 0, salt_matching_frames: 0, trailing_bytes: bytes.len().saturating_sub(32),
+            note: format!("WAL header validation failed (magic valid: {valid_magic}; version: {version}; page size: {raw_page_size})."),
+        };
+    }
+
+    let frame_size = 24 + page_size;
+    let frame_bytes = bytes.len() - 32;
+    let complete_frames = frame_bytes / frame_size;
+    let trailing_bytes = frame_bytes % frame_size;
+    let salt_one = &bytes[16..20];
+    let salt_two = &bytes[20..24];
+    let mut salt_matching_frames = 0_usize;
+    for frame_index in 0..complete_frames {
+        let frame_offset = 32 + frame_index * frame_size;
+        if &bytes[frame_offset + 8..frame_offset + 12] == salt_one
+            && &bytes[frame_offset + 12..frame_offset + 16] == salt_two
+        {
+            salt_matching_frames += 1;
+        }
+    }
+    let status = if complete_frames == 0 {
+        "valid-header-no-complete-frames"
+    } else if salt_matching_frames == complete_frames && trailing_bytes == 0 {
+        "valid-header-frames"
+    } else {
+        "frames-or-tail-need-review"
+    };
+    SqliteWalDiagnostics {
+        present: true,
+        size_bytes: bytes.len(),
+        status: status.to_string(),
+        magic_hex,
+        page_size_bytes: Some(page_size),
+        complete_frames,
+        salt_matching_frames,
+        trailing_bytes,
+        note: "WAL header, frame boundaries, and frame salts were checked. Frame checksums were not verified and WAL pages were not replayed.".to_string(),
+    }
+}
+
+fn inspect_sqlite_readonly(bytes: &[u8]) -> Option<SqliteDiagnostics> {
+    if !bytes.starts_with(b"SQLite format 3\\0") {
+        return None;
+    }
+
+    let wal_mode_header = bytes.get(18).copied() == Some(2) || bytes.get(19).copied() == Some(2);
+    if wal_mode_header {
+        return Some(SqliteDiagnostics {
+            opened_read_only: false,
+            status: "wal-mode-needs-replay".to_string(),
+            sqlite_version: None,
+            schema_objects: Vec::new(),
+            quick_check: None,
+            wal: Some(inspect_sqlite_wal(None)),
+        });
+    }
+
+    let mut connection = match Connection::open_in_memory() {
+        Ok(connection) => connection,
+        Err(error) => {
+            return Some(SqliteDiagnostics {
+                opened_read_only: false,
+                status: "open-failed".to_string(),
+                sqlite_version: None,
+                schema_objects: Vec::new(),
+                quick_check: None,
+                wal: Some(inspect_sqlite_wal(None)),
+            }.with_note(format!("Could not create in-memory SQLite connection: {error}")));
+        }
+    };
+    if let Err(error) = connection.deserialize_read_exact(rusqlite::MAIN_DB, Cursor::new(bytes), bytes.len(), true) {
+        return Some(SqliteDiagnostics {
+            opened_read_only: false,
+            status: "readonly-open-failed".to_string(),
+            sqlite_version: None,
+            schema_objects: Vec::new(),
+            quick_check: None,
+            wal: Some(inspect_sqlite_wal(None)),
+        }.with_note(format!("SQLite rejected the read-only in-memory database image: {error}")));
+    }
+
+    let sqlite_version = connection.query_row("SELECT sqlite_version()", [], |row| row.get::<_, String>(0)).ok();
+    let quick_check = connection.query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0)).ok();
+    let mut schema_objects = Vec::new();
+    let schema_result = connection.prepare(
+        "SELECT name FROM sqlite_master WHERE type IN ('table','index','view','trigger') ORDER BY type,name"
+    );
+    if let Ok(mut statement) = schema_result {
+        if let Ok(rows) = statement.query_map([], |row| row.get::<_, String>(0)) {
+            for name in rows.flatten().take(100) {
+                schema_objects.push(name.chars().take(120).collect());
+            }
+        }
+    }
+    Some(SqliteDiagnostics {
+        opened_read_only: true,
+        status: if quick_check.as_deref() == Some("ok") { "opened-readonly-integrity-ok" } else { "opened-readonly" }.to_string(),
+        sqlite_version,
+        schema_objects,
+        quick_check,
+        wal: Some(inspect_sqlite_wal(None)),
+    })
+}
+
 fn byte_diagnostics(bytes: &[u8]) -> ByteDiagnostics {
     let header_len = bytes.len().min(256);
     let tail_start = bytes.len().saturating_sub(256);
@@ -430,6 +565,7 @@ fn byte_diagnostics(bytes: &[u8]) -> ByteDiagnostics {
         size_mod_4096: bytes.len() % 4096,
         tail_hex: hex::encode(&bytes[tail_hex_start..]),
         embedded_signatures: find_embedded_signatures(bytes),
+        sqlite_database: inspect_sqlite_readonly(bytes),
     }
 }
 
