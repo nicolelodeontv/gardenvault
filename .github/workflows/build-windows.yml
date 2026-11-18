@@ -38,6 +38,16 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
           components: rustfmt
+      - name: Install npm dependencies
+        run: npm install --no-audit --no-fund
+      - name: Run frontend tests
+        run: npm test
+      - name: Generate application icons
+        run: npm run tauri -- icon src-tauri/icons/gardenvault.svg
+      - name: Format Rust source
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+      - name: Run Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
       - name: Install and expose NSIS
         shell: pwsh
         run: |
@@ -49,7 +59,24 @@ jobs:
           ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
           $makensis = Get-Command makensis.exe -ErrorAction SilentlyContinue
           if (-not $makensis) {
-            choco install nsis --no-progress -y
+            $installed = $false
+            for ($attempt = 1; $attempt -le 4; $attempt++) {
+              Write-Host "Installing NSIS with Chocolatey (attempt $attempt of 4)."
+              choco install nsis --no-progress -y --execution-timeout=1800
+              $installExitCode = $LASTEXITCODE
+              if ($installExitCode -eq 0) {
+                $installed = $true
+                break
+              }
+              if ($attempt -lt 4) {
+                $delay = $attempt * 20
+                Write-Warning "NSIS installation failed with exit code $installExitCode. Retrying in $delay seconds."
+                Start-Sleep -Seconds $delay
+              }
+            }
+            if (-not $installed) {
+              throw "Chocolatey could not install NSIS after 4 attempts (last exit code $installExitCode)."
+            }
             $nsisDirs = @(
               (Join-Path ${env:ProgramFiles(x86)} 'NSIS'),
               (Join-Path $env:ProgramFiles 'NSIS'),
@@ -72,16 +99,6 @@ jobs:
           }
           if (-not $found) { throw 'Could not locate makensis.exe after installing NSIS.' }
           & $found /VERSION
-      - name: Install npm dependencies
-        run: npm install --no-audit --no-fund
-      - name: Run frontend tests
-        run: npm test
-      - name: Generate application icons
-        run: npm run tauri -- icon src-tauri/icons/gardenvault.svg
-      - name: Format Rust source
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all
-      - name: Run Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
       - name: Build Windows app and NSIS installer
         run: npm run tauri:build
       - name: Verify build outputs
@@ -97,7 +114,7 @@ jobs:
       - name: Upload unsigned Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: GardenVault-v1.0.0-rc.8-Windows-x64-unsigned
+          name: GardenVault-v1.0.0-rc.9-Windows-x64-unsigned
           path: |
             src-tauri/target/release/gardenvault.exe
             src-tauri/target/release/bundle/nsis/*-setup.exe
