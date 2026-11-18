@@ -33,7 +33,7 @@ Run `build_windows.bat` from the repository root. GitHub Actions builds an unsig
 
 ## LDPlayer 14
 
-ADB discovery checks `GARDENVAULT_ADB`, then `C:\\LDPlayer\\LDPlayer14\\adb.exe`, then `adb.exe` on PATH. Enable ADB debugging and LDPlayer root access. Close Gardenscapes completely before reading.
+ADB discovery checks `GARDENVAULT_ADB`, then `C:\LDPlayer\\LDPlayer14\\adb.exe`, then `adb.exe` on PATH. Enable ADB debugging and LDPlayer root access. Close Gardenscapes completely before reading.
 
 ## Security
 
