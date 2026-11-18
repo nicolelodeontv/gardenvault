@@ -39,7 +39,7 @@ test("encrypted backup browser exposes refresh and export controls", () => {
   assert.match(js, /observedOutputBytes/);
   assert.match(js, /zstdCandidatesOverlappingSkipped/);
   assert.match(js, /zstdSkippableFrames/);
-  assert.match(js, /checksumValidation/);
+  assert.match(js, /checksumValidation/);\n  assert.match(js, /unvalidated/);
   assert.match(js, /sqliteDatabase/);
   assert.match(js, /quickCheck/);
   assert.match(js, /completeFrames/);
