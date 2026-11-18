@@ -45,7 +45,9 @@ jobs:
       - name: Generate application icons
         run: npm run tauri -- icon src-tauri/icons/gardenvault.svg
       - name: Format Rust source
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+        run: |
+          cargo fmt --manifest-path src-tauri/Cargo.toml --all
+          cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
       - name: Run Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
       - name: Install and expose NSIS
