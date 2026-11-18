@@ -34,10 +34,13 @@ impl CaptureTempGuard<'_> {
             return Ok(());
         }
 
-        let remote_result = match root_cleanup_capture_command(&self.sdcard_path, &self.fallback_path) {
-            Ok(cleanup_command) => run_adb_for_device(self.adb, self.serial, &["shell", &cleanup_command]),
-            Err(error) => Err(error),
-        };
+        let remote_result =
+            match root_cleanup_capture_command(&self.sdcard_path, &self.fallback_path) {
+                Ok(cleanup_command) => {
+                    run_adb_for_device(self.adb, self.serial, &["shell", &cleanup_command])
+                }
+                Err(error) => Err(error),
+            };
         let mut errors = Vec::new();
         match remote_result {
             Ok(output) if output.status.success() => {}
@@ -49,7 +52,9 @@ impl CaptureTempGuard<'_> {
                     format!("ADB could not remove device-side temporary copies: {detail}")
                 });
             }
-            Err(error) => errors.push(format!("Could not run device-side temporary-file cleanup: {error}")),
+            Err(error) => errors.push(format!(
+                "Could not run device-side temporary-file cleanup: {error}"
+            )),
         }
 
         match fs::remove_file(&self.host_file) {
@@ -102,7 +107,10 @@ fn create_capture_temp_guard<'a>(
     serial: &'a str,
     file_name: &str,
 ) -> Result<CaptureTempGuard<'a>, String> {
-    if !matches!(file_name, "GameData.db" | "GameData.db.bak" | "GameData.db-wal") {
+    if !matches!(
+        file_name,
+        "GameData.db" | "GameData.db.bak" | "GameData.db-wal"
+    ) {
         return Err("Unsupported Gardenscapes save file.".to_string());
     }
 
@@ -126,7 +134,9 @@ fn create_capture_temp_guard<'a>(
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
-                return Err(format!("Could not create a private host capture folder: {error}"));
+                return Err(format!(
+                    "Could not create a private host capture folder: {error}"
+                ));
             }
         }
     }
@@ -139,8 +149,10 @@ fn root_prepare_pull_command(
     sdcard_path: &str,
     fallback_path: &str,
 ) -> Result<String, String> {
-    if !matches!(file_name, "GameData.db" | "GameData.db.bak" | "GameData.db-wal")
-        || !is_valid_capture_temp_path(sdcard_path, "/sdcard/.gardenvault-capture-")
+    if !matches!(
+        file_name,
+        "GameData.db" | "GameData.db.bak" | "GameData.db-wal"
+    ) || !is_valid_capture_temp_path(sdcard_path, "/sdcard/.gardenvault-capture-")
         || !is_valid_capture_temp_path(fallback_path, "/data/local/tmp/.gardenvault-capture-")
     {
         return Err("Unsupported Gardenscapes capture path.".to_string());
@@ -158,7 +170,9 @@ fn root_cleanup_capture_command(sdcard_path: &str, fallback_path: &str) -> Resul
         return Err("Unsupported Gardenscapes temporary cleanup path.".to_string());
     }
 
-    Ok(format!("su -c 'rm -f \"{sdcard_path}\" \"{fallback_path}\"'"))
+    Ok(format!(
+        "su -c 'rm -f \"{sdcard_path}\" \"{fallback_path}\"'"
+    ))
 }
 
 fn is_valid_sha256(value: &str) -> bool {
@@ -186,7 +200,10 @@ fn parse_device_pull_metadata(
     let output_text = std::str::from_utf8(stdout)
         .map_err(|_| format!("Could not read {file_name}: invalid device copy metadata."))?;
     let lines = output_text.lines().collect::<Vec<_>>();
-    if lines.iter().any(|line| *line == "__GARDENVAULT_FILE_MISSING__") {
+    if lines
+        .iter()
+        .any(|line| *line == "__GARDENVAULT_FILE_MISSING__")
+    {
         return Ok(None);
     }
 
@@ -209,17 +226,19 @@ fn parse_device_pull_metadata(
             "Could not prepare {file_name}: device selected an unexpected temporary path."
         ));
     }
-    let source_size = fields[1]
-        .parse::<usize>()
-        .map_err(|_| format!("Could not prepare {file_name}: invalid source file size reported by device."))?;
+    let source_size = fields[1].parse::<usize>().map_err(|_| {
+        format!("Could not prepare {file_name}: invalid source file size reported by device.")
+    })?;
     let source_sha256 = fields[2].to_string();
-    let copy_size = fields[3]
-        .parse::<usize>()
-        .map_err(|_| format!("Could not prepare {file_name}: invalid temporary-copy size reported by device."))?;
+    let copy_size = fields[3].parse::<usize>().map_err(|_| {
+        format!("Could not prepare {file_name}: invalid temporary-copy size reported by device.")
+    })?;
     let copy_sha256 = fields[4].to_string();
 
     if source_size == 0 || copy_size == 0 {
-        return Err(format!("{file_name} is zero bytes; refusing to create an empty backup entry."));
+        return Err(format!(
+            "{file_name} is zero bytes; refusing to create an empty backup entry."
+        ));
     }
     if source_size > MAX_SAVE_BYTES || copy_size > MAX_SAVE_BYTES {
         return Err(format!(
@@ -303,11 +322,7 @@ pub(super) fn capture_file_optional(
         };
 
         let host_path = guard.host_file.to_string_lossy().into_owned();
-        let pulled = run_adb_for_device(
-            adb,
-            serial,
-            &["pull", &metadata.remote_path, &host_path],
-        )?;
+        let pulled = run_adb_for_device(adb, serial, &["pull", &metadata.remote_path, &host_path])?;
         if !pulled.status.success() {
             let detail = String::from_utf8_lossy(&pulled.stderr).trim().to_string();
             return Err(if detail.is_empty() {
@@ -329,7 +344,9 @@ pub(super) fn capture_file_optional(
             ));
         }
         if metadata.source_size != metadata.copy_size
-            || !metadata.source_sha256.eq_ignore_ascii_case(&metadata.copy_sha256)
+            || !metadata
+                .source_sha256
+                .eq_ignore_ascii_case(&metadata.copy_sha256)
         {
             return Err(format!(
                 "Device temporary-copy verification changed before pull for {file_name}. No backup was saved."
@@ -344,8 +361,13 @@ pub(super) fn capture_file_optional(
 
         let bytes = fs::read(&guard.host_file)
             .map_err(|error| format!("Could not read pulled host copy of {file_name}: {error}"))?;
-        verify_pulled_capture(file_name, &bytes, metadata.source_size, &metadata.source_sha256)
-            .map(Some)
+        verify_pulled_capture(
+            file_name,
+            &bytes,
+            metadata.source_size,
+            &metadata.source_sha256,
+        )
+        .map(Some)
     })();
 
     let cleanup_result = guard.cleanup();
@@ -361,11 +383,7 @@ pub(super) fn capture_file_optional(
     }
 }
 
-pub(super) fn capture_file(
-    adb: &Path,
-    serial: &str,
-    file_name: &str,
-) -> Result<Vec<u8>, String> {
+pub(super) fn capture_file(adb: &Path, serial: &str, file_name: &str) -> Result<Vec<u8>, String> {
     capture_file_optional(adb, serial, file_name)?
         .ok_or_else(|| format!("Required Gardenscapes file {file_name} is not present."))
 }
@@ -378,7 +396,8 @@ mod tests {
     #[test]
     fn root_prepare_pull_command_uses_copy_hashes_and_safe_fallback() {
         let sdcard = "/sdcard/.gardenvault-capture-0123456789abcdef0123456789abcdef-GameData.db";
-        let fallback = "/data/local/tmp/.gardenvault-capture-0123456789abcdef0123456789abcdef-GameData.db";
+        let fallback =
+            "/data/local/tmp/.gardenvault-capture-0123456789abcdef0123456789abcdef-GameData.db";
         let command = root_prepare_pull_command("GameData.db", sdcard, fallback).unwrap();
         assert!(command.contains("cp \"$src\" \"$sd\""));
         assert!(command.contains("cp \"$src\" \"$fallback\""));
@@ -396,7 +415,8 @@ mod tests {
     #[test]
     fn cleanup_command_only_removes_generated_capture_paths() {
         let sdcard = "/sdcard/.gardenvault-capture-0123456789abcdef0123456789abcdef-GameData.db";
-        let fallback = "/data/local/tmp/.gardenvault-capture-0123456789abcdef0123456789abcdef-GameData.db";
+        let fallback =
+            "/data/local/tmp/.gardenvault-capture-0123456789abcdef0123456789abcdef-GameData.db";
         let command = root_cleanup_capture_command(sdcard, fallback).unwrap();
         assert!(command.contains("rm -f"));
         assert!(command.contains(sdcard));
@@ -414,7 +434,9 @@ mod tests {
             true,
             "/sdcard/.gardenvault-capture-id-GameData.db-wal",
             "/data/local/tmp/.gardenvault-capture-id-GameData.db-wal",
-        ).unwrap().is_none());
+        )
+        .unwrap()
+        .is_none());
 
         let mut files: Vec<FileInfo> = Vec::new();
         let mut vaults: Vec<VaultFile> = Vec::new();
@@ -432,7 +454,8 @@ mod tests {
             false,
             "/sdcard/.gardenvault-capture-id-GameData.db",
             "/data/local/tmp/.gardenvault-capture-id-GameData.db",
-        ).unwrap_err();
+        )
+        .unwrap_err();
         assert!(error.contains("prepare GameData.db for ADB pull"));
         assert!(error.contains("permission denied"));
     }
@@ -441,13 +464,37 @@ mod tests {
     fn device_copy_metadata_rejects_zero_length_and_source_copy_mismatch() {
         let sdcard = "/sdcard/.gardenvault-capture-id-GameData.db";
         let fallback = "/data/local/tmp/.gardenvault-capture-id-GameData.db";
-        let zero = format!("__GARDENVAULT_PULL__:{sdcard}:0:{}:0:{}\n", hash_hex(b""), hash_hex(b""));
-        assert!(parse_device_pull_metadata("GameData.db", zero.as_bytes(), b"", true, sdcard, fallback)
-            .unwrap_err().contains("zero bytes"));
+        let zero = format!(
+            "__GARDENVAULT_PULL__:{sdcard}:0:{}:0:{}\n",
+            hash_hex(b""),
+            hash_hex(b"")
+        );
+        assert!(parse_device_pull_metadata(
+            "GameData.db",
+            zero.as_bytes(),
+            b"",
+            true,
+            sdcard,
+            fallback
+        )
+        .unwrap_err()
+        .contains("zero bytes"));
 
-        let mismatch = format!("__GARDENVAULT_PULL__:{sdcard}:4:{}:3:{}\n", hash_hex(b"abcd"), hash_hex(b"abc"));
-        assert!(parse_device_pull_metadata("GameData.db", mismatch.as_bytes(), b"", true, sdcard, fallback)
-            .unwrap_err().contains("source size/hash did not match"));
+        let mismatch = format!(
+            "__GARDENVAULT_PULL__:{sdcard}:4:{}:3:{}\n",
+            hash_hex(b"abcd"),
+            hash_hex(b"abc")
+        );
+        assert!(parse_device_pull_metadata(
+            "GameData.db",
+            mismatch.as_bytes(),
+            b"",
+            true,
+            sdcard,
+            fallback
+        )
+        .unwrap_err()
+        .contains("source size/hash did not match"));
     }
 
     #[test]
@@ -457,10 +504,21 @@ mod tests {
         let fallback = "/data/local/tmp/.gardenvault-capture-id-GameData.db";
         let valid = format!(
             "__GARDENVAULT_PULL__:{sdcard}:{}:{}:{}:{}\r\n",
-            bytes.len(), hash_hex(bytes), bytes.len(), hash_hex(bytes)
+            bytes.len(),
+            hash_hex(bytes),
+            bytes.len(),
+            hash_hex(bytes)
         );
-        let metadata = parse_device_pull_metadata("GameData.db", valid.as_bytes(), b"", true, sdcard, fallback)
-            .unwrap().unwrap();
+        let metadata = parse_device_pull_metadata(
+            "GameData.db",
+            valid.as_bytes(),
+            b"",
+            true,
+            sdcard,
+            fallback,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(metadata.remote_path, sdcard);
         assert_eq!(metadata.source_size, bytes.len());
         assert_eq!(metadata.copy_size, bytes.len());
@@ -469,9 +527,20 @@ mod tests {
 
         let unknown_path = format!(
             "__GARDENVAULT_PULL__:/data/local/tmp/unrelated:{}:{}:{}:{}\n",
-            bytes.len(), hash_hex(bytes), bytes.len(), hash_hex(bytes)
+            bytes.len(),
+            hash_hex(bytes),
+            bytes.len(),
+            hash_hex(bytes)
         );
-        assert!(parse_device_pull_metadata("GameData.db", unknown_path.as_bytes(), b"", true, sdcard, fallback).is_err());
+        assert!(parse_device_pull_metadata(
+            "GameData.db",
+            unknown_path.as_bytes(),
+            b"",
+            true,
+            sdcard,
+            fallback
+        )
+        .is_err());
     }
 
     #[test]
@@ -482,8 +551,9 @@ mod tests {
             binary.extend_from_slice(b"gardenscapes\x00binary\r\n");
             binary.extend_from_slice(&(index as u32).to_le_bytes());
         }
-        let pulled = verify_pulled_capture("GameData.db", &binary, binary.len(), &hash_hex(&binary))
-            .expect("adb pull must preserve every binary byte");
+        let pulled =
+            verify_pulled_capture("GameData.db", &binary, binary.len(), &hash_hex(&binary))
+                .expect("adb pull must preserve every binary byte");
         assert_eq!(pulled, binary);
         assert_eq!(pulled.len(), binary.len());
         assert_eq!(hash_hex(&pulled), hash_hex(&binary));
@@ -495,7 +565,8 @@ mod tests {
         let mut files: Vec<FileInfo> = Vec::new();
         let mut vaults: Vec<VaultFile> = Vec::new();
 
-        let wrong_size = verify_pulled_capture("GameData.db", actual, actual.len() + 1, &hash_hex(actual));
+        let wrong_size =
+            verify_pulled_capture("GameData.db", actual, actual.len() + 1, &hash_hex(actual));
         assert!(wrong_size.is_err());
         assert!(files.is_empty());
         assert!(vaults.is_empty());
@@ -506,7 +577,8 @@ mod tests {
         assert!(files.is_empty());
         assert!(vaults.is_empty());
 
-        let verified = verify_pulled_capture("GameData.db", actual, actual.len(), &hash_hex(actual)).unwrap();
+        let verified =
+            verify_pulled_capture("GameData.db", actual, actual.len(), &hash_hex(actual)).unwrap();
         append_captured_file("GameData.db", verified, &mut files, &mut vaults);
         assert_eq!(files.len(), 1);
         assert_eq!(vaults.len(), 1);

@@ -18,6 +18,12 @@ function setStatus(message, kind = "") {
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 }
+const utf8Bytes = value => new TextEncoder().encode(value).length;
+function passphraseProblem(value) {
+  if ([...value].length < 12) return "Enter a vault passphrase of at least 12 characters.";
+  if (utf8Bytes(value) > 256) return "That passphrase is longer than 256 bytes. Shorten it (non-ASCII characters use more than one byte).";
+  return "";
+}
 function refreshReadButton() {
   const selected = window.gardenVaultDevices?.find(d => d.serial === deviceSelect.value);
   readButton.disabled = !selected || !selected.gameInstalled || !selected.rootAvailable;
@@ -59,6 +65,9 @@ async function refreshDevices() {
     connectionBadge.className = ready ? "status-badge ok" : "status-badge warn";
     refreshReadButton();
   } catch (error) {
+    window.gardenVaultDevices = [];
+    deviceSelect.innerHTML = '<option value="">No device available</option>';
+    refreshReadButton();
     deviceSummary.textContent = String(error);
     connectionBadge.textContent = "ADB ERROR";
     connectionBadge.className = "status-badge warn";
@@ -92,7 +101,8 @@ function renderVaults(vaults) {
       const fileName = button.dataset.fileName;
       const status = button.closest(".vault-row").querySelector(".vault-row-status");
       const passphrase = inspectPassphraseInput?.value || "";
-      if (passphrase.length < 12) { status.textContent = "Enter the vault passphrase above."; status.className = "vault-row-status error"; inspectPassphraseInput?.focus(); return; }
+      const inspectProblem = passphraseProblem(passphrase);
+      if (inspectProblem) { status.textContent = inspectProblem; status.className = "vault-row-status error"; inspectPassphraseInput?.focus(); return; }
       button.disabled = true; status.textContent = "Decrypting in memory and analyzing binary structure…"; status.className = "vault-row-status";
       try {
         const report = await invoke("inspect_vault", { fileName, passphrase });
@@ -241,7 +251,8 @@ readButton.addEventListener("click", async () => {
   const serial = deviceSelect.value;
   const passphrase = passphraseInput.value;
   if (!serial) { setStatus("Select a connected LDPlayer device.", "error"); return; }
-  if (passphrase.length < 12) { setStatus("Enter a vault passphrase of at least 12 characters.", "error"); passphraseInput.focus(); return; }
+  const problem = passphraseProblem(passphrase);
+  if (problem) { setStatus(problem, "error"); passphraseInput.focus(); return; }
   readButton.disabled = true;
   refreshButton.disabled = true;
   setStatus("Verifying game state and encrypting snapshot…");

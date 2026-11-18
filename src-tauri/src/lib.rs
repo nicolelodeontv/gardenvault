@@ -1,4 +1,7 @@
-use aes_gcm::{aead::{Aead, KeyInit}, Aes256Gcm, Nonce};
+use aes_gcm::{
+    aead::{Aead, KeyInit},
+    Aes256Gcm, Nonce,
+};
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use chrono::Utc;
@@ -6,7 +9,13 @@ use rand::{rngs::OsRng, RngCore};
 use rusqlite::{config::DbConfig, Connection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{fs::{self, File, OpenOptions}, io::{Cursor, Read, Write}, path::{Path, PathBuf}, process::{Command, Output}, time::{Duration, Instant, UNIX_EPOCH}};
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{Cursor, Read, Write},
+    path::{Path, PathBuf},
+    process::{Command, Output},
+    time::{Duration, Instant, UNIX_EPOCH},
+};
 use tauri::{AppHandle, Manager};
 
 mod pull_capture;
@@ -18,7 +27,9 @@ const MAX_SAVE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_VAULT_BYTES: u64 = (MAX_SAVE_BYTES as u64) * 4 + 2 * 1024 * 1024;
 const MAX_DECOMPRESSED_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_ZSTD_WINDOW_BYTES: u64 = 16 * 1024 * 1024;
+#[cfg(test)]
 const MAX_DECOMPRESSOR_HEADROOM_BYTES: u64 = 8 * 1024 * 1024;
+#[cfg(test)]
 const MAX_DECOMPRESSOR_WORKING_SET_BYTES: u64 = 64 * 1024 * 1024;
 const SQLITE_QUERY_BUDGET_MS: u64 = 500;
 const SQLITE_TIMEOUT_LABEL: &str = "inconclusive (time budget)";
@@ -29,11 +40,19 @@ const VAULT_MAGIC: &[u8; 7] = b"GVLT001";
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct DeviceInfo { serial: String, game_installed: bool, root_available: bool }
+struct DeviceInfo {
+    serial: String,
+    game_installed: bool,
+    root_available: bool,
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct FileInfo { name: String, size_bytes: usize, sha256: String }
+struct FileInfo {
+    name: String,
+    size_bytes: usize,
+    sha256: String,
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,7 +66,11 @@ struct ReadProfileResult {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct VaultListItem { file_name: String, size_bytes: u64, modified_at: u64 }
+struct VaultListItem {
+    file_name: String,
+    size_bytes: u64,
+    modified_at: u64,
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -76,15 +99,24 @@ struct VaultFile {
 fn adb_executable() -> PathBuf {
     if let Some(explicit) = std::env::var_os("GARDENVAULT_ADB") {
         let path = PathBuf::from(explicit);
-        if path.is_file() { return path; }
+        if path.is_file() {
+            return path;
+        }
     }
     #[cfg(windows)]
     {
         let common = PathBuf::from(r"C:\LDPlayer\LDPlayer14\adb.exe");
-        if common.is_file() { return common; }
+        if common.is_file() {
+            return common;
+        }
         if let Some(program_files) = std::env::var_os("ProgramFiles") {
-            let candidate = PathBuf::from(program_files).join("LDPlayer").join("LDPlayer14").join("adb.exe");
-            if candidate.is_file() { return candidate; }
+            let candidate = PathBuf::from(program_files)
+                .join("LDPlayer")
+                .join("LDPlayer14")
+                .join("adb.exe");
+            if candidate.is_file() {
+                return candidate;
+            }
         }
     }
     PathBuf::from("adb")
@@ -120,12 +152,19 @@ fn is_valid_vault_file_name(file_name: &str) -> bool {
     !file_name.is_empty()
         && file_name.len() <= 128
         && file_name.ends_with(".gvault")
-        && !file_name.chars().any(|c| c.is_control() || matches!(c, '/' | '\\' | ':'))
-        && Path::new(file_name).file_name().and_then(|name| name.to_str()) == Some(file_name)
+        && !file_name
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '/' | '\\' | ':'))
+        && Path::new(file_name)
+            .file_name()
+            .and_then(|name| name.to_str())
+            == Some(file_name)
 }
 
 fn app_vault_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let app_data = app.path().app_data_dir()
+    let app_data = app
+        .path()
+        .app_data_dir()
         .map_err(|e| format!("Could not resolve GardenVault data folder: {e}"))?;
     Ok(app_data.join("vaults"))
 }
@@ -135,7 +174,8 @@ fn derive_key(passphrase: &str, salt: &[u8; 16]) -> Result<[u8; 32], String> {
         .map_err(|e| format!("Invalid key-derivation parameters: {e}"))?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let mut key = [0_u8; 32];
-    argon2.hash_password_into(passphrase.as_bytes(), salt, &mut key)
+    argon2
+        .hash_password_into(passphrase.as_bytes(), salt, &mut key)
         .map_err(|e| format!("Could not derive encryption key: {e}"))?;
     Ok(key)
 }
@@ -150,7 +190,8 @@ fn encrypt_vault(passphrase: &str, plaintext: &[u8]) -> Result<Vec<u8>, String> 
     let key = derive_key(passphrase, &salt)?;
     let cipher = Aes256Gcm::new_from_slice(&key)
         .map_err(|_| "Could not initialize AES-256-GCM".to_string())?;
-    let encrypted = cipher.encrypt(Nonce::from_slice(&nonce), plaintext)
+    let encrypted = cipher
+        .encrypt(Nonce::from_slice(&nonce), plaintext)
         .map_err(|_| "Could not encrypt the profile snapshot".to_string())?;
 
     let mut output = Vec::with_capacity(35 + encrypted.len());
@@ -166,12 +207,17 @@ fn decrypt_vault_for_test(passphrase: &str, input: &[u8]) -> Result<Vec<u8>, Str
     if input.len() < 35 || &input[..7] != VAULT_MAGIC {
         return Err("Invalid GardenVault file header".to_string());
     }
-    let salt: [u8; 16] = input[7..23].try_into().map_err(|_| "Invalid salt".to_string())?;
-    let nonce: [u8; 12] = input[23..35].try_into().map_err(|_| "Invalid nonce".to_string())?;
+    let salt: [u8; 16] = input[7..23]
+        .try_into()
+        .map_err(|_| "Invalid salt".to_string())?;
+    let nonce: [u8; 12] = input[23..35]
+        .try_into()
+        .map_err(|_| "Invalid nonce".to_string())?;
     let key = derive_key(passphrase, &salt)?;
     let cipher = Aes256Gcm::new_from_slice(&key)
         .map_err(|_| "Could not initialize AES-256-GCM".to_string())?;
-    cipher.decrypt(Nonce::from_slice(&nonce), &input[35..])
+    cipher
+        .decrypt(Nonce::from_slice(&nonce), &input[35..])
         .map_err(|_| "Authentication failed: wrong password or damaged vault".to_string())
 }
 
@@ -224,7 +270,6 @@ struct ByteDiagnostics {
     embedded_signatures: Vec<String>,
     sqlite_database: Option<SqliteDiagnostics>,
 }
-
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -360,35 +405,51 @@ fn decrypt_vault(passphrase: &str, input: &[u8]) -> Result<Vec<u8>, String> {
     if &input[..7] != VAULT_MAGIC {
         return Err("This is not a recognized GardenVault backup.".to_string());
     }
-    let salt: [u8; 16] = input[7..23].try_into().map_err(|_| "Invalid vault salt".to_string())?;
-    let nonce: [u8; 12] = input[23..35].try_into().map_err(|_| "Invalid vault nonce".to_string())?;
+    let salt: [u8; 16] = input[7..23]
+        .try_into()
+        .map_err(|_| "Invalid vault salt".to_string())?;
+    let nonce: [u8; 12] = input[23..35]
+        .try_into()
+        .map_err(|_| "Invalid vault nonce".to_string())?;
     let key = derive_key(passphrase, &salt)?;
     let cipher = Aes256Gcm::new_from_slice(&key)
         .map_err(|_| "Could not initialize AES-256-GCM".to_string())?;
-    cipher.decrypt(Nonce::from_slice(&nonce), &input[35..])
+    cipher
+        .decrypt(Nonce::from_slice(&nonce), &input[35..])
         .map_err(|_| "Authentication failed: wrong passphrase or damaged backup".to_string())
 }
 
 fn byte_entropy(bytes: &[u8]) -> f64 {
-    if bytes.is_empty() { return 0.0; }
+    if bytes.is_empty() {
+        return 0.0;
+    }
     let mut counts = [0_usize; 256];
-    for byte in bytes { counts[*byte as usize] += 1; }
+    for byte in bytes {
+        counts[*byte as usize] += 1;
+    }
     let length = bytes.len() as f64;
-    counts.iter().filter(|count| **count > 0).fold(0.0, |entropy, count| {
-        let probability = *count as f64 / length;
-        entropy - probability * probability.log2()
-    })
+    counts
+        .iter()
+        .filter(|count| **count > 0)
+        .fold(0.0, |entropy, count| {
+            let probability = *count as f64 / length;
+            entropy - probability * probability.log2()
+        })
 }
 
 fn byte_percent(bytes: &[u8], predicate: impl Fn(u8) -> bool) -> f64 {
-    if bytes.is_empty() { return 0.0; }
+    if bytes.is_empty() {
+        return 0.0;
+    }
     let matching = bytes.iter().filter(|byte| predicate(**byte)).count();
     (matching as f64 * 100.0) / bytes.len() as f64
 }
 
 fn unique_byte_count(bytes: &[u8]) -> usize {
     let mut seen = [false; 256];
-    for byte in bytes { seen[*byte as usize] = true; }
+    for byte in bytes {
+        seen[*byte as usize] = true;
+    }
     seen.iter().filter(|value| **value).count()
 }
 
@@ -406,7 +467,8 @@ fn find_signature_offsets(bytes: &[u8], signature: &[u8]) -> Vec<usize> {
     if signature.is_empty() || bytes.len() < signature.len() {
         return Vec::new();
     }
-    bytes.windows(signature.len())
+    bytes
+        .windows(signature.len())
         .enumerate()
         .filter_map(|(offset, window)| (window == signature).then_some(offset))
         .collect()
@@ -438,12 +500,23 @@ fn find_embedded_signatures(bytes: &[u8]) -> Vec<String> {
     found
 }
 
-fn plxe_header_words(bytes: &[u8], plxe_offsets: &[usize], zstd_offsets: &[usize], probes: &[ZstdProbe]) -> Vec<String> {
+fn plxe_header_words(
+    bytes: &[u8],
+    plxe_offsets: &[usize],
+    zstd_offsets: &[usize],
+    probes: &[ZstdProbe],
+) -> Vec<String> {
     let mut words = Vec::new();
     for &plxe_offset in plxe_offsets.iter().take(32) {
-        let Some(header_start) = plxe_offset.checked_add(4) else { continue };
+        let Some(header_start) = plxe_offset.checked_add(4) else {
+            continue;
+        };
         let header_limit = bytes.len().min(plxe_offset.saturating_add(36));
-        let payload_start = zstd_offsets.iter().copied().filter(|offset| *offset >= header_start).min();
+        let payload_start = zstd_offsets
+            .iter()
+            .copied()
+            .filter(|offset| *offset >= header_start)
+            .min();
         let header_end = payload_start.unwrap_or(header_limit).min(header_limit);
         let mut field_offset = header_start;
         while field_offset.saturating_add(4) <= header_end {
@@ -455,20 +528,33 @@ fn plxe_header_words(bytes: &[u8], plxe_offsets: &[usize], zstd_offsets: &[usize
             ]);
             let remaining_after_field = bytes.len().saturating_sub(field_offset + 4);
             let mut matches = Vec::new();
-            if value as usize == bytes.len() { matches.push("matches total file size"); }
-            if value as usize == remaining_after_field { matches.push("matches bytes after field"); }
-            for &zstd_offset in zstd_offsets.iter().filter(|offset| **offset >= header_start).take(8) {
+            if value as usize == bytes.len() {
+                matches.push("matches total file size");
+            }
+            if value as usize == remaining_after_field {
+                matches.push("matches bytes after field");
+            }
+            for &zstd_offset in zstd_offsets
+                .iter()
+                .filter(|offset| **offset >= header_start)
+                .take(8)
+            {
                 if value as usize == bytes.len().saturating_sub(zstd_offset) {
                     matches.push("matches bytes from Zstandard candidate to EOF");
                     break;
                 }
             }
             if probes.iter().any(|probe| {
-                probe.offset >= header_start && probe.compressed_frame_size_bytes == Some(value as usize)
+                probe.offset >= header_start
+                    && probe.compressed_frame_size_bytes == Some(value as usize)
             }) {
                 matches.push("matches compressed Zstandard frame length");
             }
-            let match_text = if matches.is_empty() { String::new() } else { format!(" ({})", matches.join(", ")) };
+            let match_text = if matches.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", matches.join(", "))
+            };
             let word_index = ((field_offset - header_start) / 4) + 1;
             words.push(format!(
                 "PLXE@0x{plxe_offset:X} word {word_index} (+0x{:02X}): u32le={} (0x{value:08X}){match_text}",
@@ -481,15 +567,30 @@ fn plxe_header_words(bytes: &[u8], plxe_offsets: &[usize], zstd_offsets: &[usize
     words
 }
 
-fn plxe_header_decoded_size_matches(bytes: &[u8], plxe_offsets: &[usize], zstd_offsets: &[usize], probes: &[ZstdProbe]) -> Vec<String> {
+fn plxe_header_decoded_size_matches(
+    bytes: &[u8],
+    plxe_offsets: &[usize],
+    zstd_offsets: &[usize],
+    probes: &[ZstdProbe],
+) -> Vec<String> {
     let mut matches = Vec::new();
-    let decoded_frames = probes.iter()
-        .filter_map(|probe| probe.decoded.as_ref().map(|decoded| (probe.offset, decoded.size_bytes)));
+    let decoded_frames = probes.iter().filter_map(|probe| {
+        probe
+            .decoded
+            .as_ref()
+            .map(|decoded| (probe.offset, decoded.size_bytes))
+    });
     let decoded_frames = decoded_frames.collect::<Vec<_>>();
     for &plxe_offset in plxe_offsets.iter().take(32) {
-        let Some(header_start) = plxe_offset.checked_add(4) else { continue };
+        let Some(header_start) = plxe_offset.checked_add(4) else {
+            continue;
+        };
         let header_limit = bytes.len().min(plxe_offset.saturating_add(36));
-        let payload_start = zstd_offsets.iter().copied().filter(|offset| *offset >= header_start).min();
+        let payload_start = zstd_offsets
+            .iter()
+            .copied()
+            .filter(|offset| *offset >= header_start)
+            .min();
         let header_end = payload_start.unwrap_or(header_limit).min(header_limit);
         let mut field_offset = header_start;
         while field_offset.saturating_add(4) <= header_end {
@@ -517,20 +618,18 @@ fn plxe_header_decoded_size_matches(bytes: &[u8], plxe_offsets: &[usize], zstd_o
     matches
 }
 
-impl SqliteDiagnostics {
-    fn with_note(mut self, note: String) -> Self {
-        self.note = note;
-        self
-    }
-}
-
 fn inspect_sqlite_wal(wal: Option<&[u8]>) -> SqliteWalDiagnostics {
     let Some(bytes) = wal else {
         return SqliteWalDiagnostics {
-            present: false, size_bytes: 0, status: "unvalidated-not-present".to_string(),
+            present: false,
+            size_bytes: 0,
+            status: "unvalidated-not-present".to_string(),
             checksum_validation: "unvalidated".to_string(),
-            magic_hex: None, page_size_bytes: None, complete_frames: 0,
-            salt_matching_frames: 0, trailing_bytes: 0,
+            magic_hex: None,
+            page_size_bytes: None,
+            complete_frames: 0,
+            salt_matching_frames: 0,
+            trailing_bytes: 0,
             note: "No companion GameData.db-wal file was captured.".to_string(),
         };
     };
@@ -538,10 +637,15 @@ fn inspect_sqlite_wal(wal: Option<&[u8]>) -> SqliteWalDiagnostics {
     let magic_hex = bytes.get(..4).map(hex::encode);
     if bytes.len() < 32 {
         return SqliteWalDiagnostics {
-            present: true, size_bytes: bytes.len(), status: "unvalidated-incomplete-header".to_string(),
+            present: true,
+            size_bytes: bytes.len(),
+            status: "unvalidated-incomplete-header".to_string(),
             checksum_validation: "unvalidated".to_string(),
-            magic_hex, page_size_bytes: None, complete_frames: 0,
-            salt_matching_frames: 0, trailing_bytes: bytes.len(),
+            magic_hex,
+            page_size_bytes: None,
+            complete_frames: 0,
+            salt_matching_frames: 0,
+            trailing_bytes: bytes.len(),
             note: "WAL file is shorter than its 32-byte header.".to_string(),
         };
     }
@@ -549,7 +653,11 @@ fn inspect_sqlite_wal(wal: Option<&[u8]>) -> SqliteWalDiagnostics {
     let magic = u32::from_be_bytes(bytes[0..4].try_into().unwrap_or_default());
     let version = u32::from_be_bytes(bytes[4..8].try_into().unwrap_or_default());
     let raw_page_size = u32::from_be_bytes(bytes[8..12].try_into().unwrap_or_default()) as usize;
-    let page_size = if raw_page_size == 1 { 65_536 } else { raw_page_size };
+    let page_size = if raw_page_size == 1 {
+        65_536
+    } else {
+        raw_page_size
+    };
     let valid_magic = magic == 0x377f_0682 || magic == 0x377f_0683;
     let valid_page_size = (512..=65_536).contains(&page_size) && page_size.is_power_of_two();
 
@@ -643,10 +751,12 @@ fn inspect_sqlite_readonly(bytes: &[u8]) -> Option<SqliteDiagnostics> {
 
     let mut connection = match Connection::open_in_memory() {
         Ok(connection) => connection,
-        Err(error) => return Some(sqlite_diagnostics_failure(
-            "open-failed",
-            format!("Could not create in-memory SQLite connection: {error}"),
-        )),
+        Err(error) => {
+            return Some(sqlite_diagnostics_failure(
+                "open-failed",
+                format!("Could not create in-memory SQLite connection: {error}"),
+            ))
+        }
     };
 
     if let Err(error) = connection.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true) {
@@ -661,13 +771,16 @@ fn inspect_sqlite_readonly(bytes: &[u8]) -> Option<SqliteDiagnostics> {
             format!("Could not explicitly disable SQLite extension loading: {error}"),
         ));
     }
-    if let Err(error) = connection.execute_batch("PRAGMA query_only=ON; PRAGMA trusted_schema=OFF;") {
+    if let Err(error) = connection.execute_batch("PRAGMA query_only=ON; PRAGMA trusted_schema=OFF;")
+    {
         return Some(sqlite_diagnostics_failure(
             "readonly-pragmas-failed",
             format!("Could not enable query_only and trusted_schema protections: {error}"),
         ));
     }
-    if let Err(error) = connection.deserialize_read_exact(rusqlite::MAIN_DB, Cursor::new(bytes), bytes.len(), true) {
+    if let Err(error) =
+        connection.deserialize_read_exact(rusqlite::MAIN_DB, Cursor::new(bytes), bytes.len(), true)
+    {
         return Some(sqlite_diagnostics_failure(
             "readonly-open-failed",
             format!("SQLite rejected the read-only in-memory database image: {error}"),
@@ -681,7 +794,8 @@ fn inspect_sqlite_readonly(bytes: &[u8]) -> Option<SqliteDiagnostics> {
     let sqlite_version = connection
         .query_row("SELECT sqlite_version()", [], |row| row.get::<_, String>(0))
         .ok();
-    let quick_check_result = connection.query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0));
+    let quick_check_result =
+        connection.query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0));
     let quick_check = quick_check_result.as_ref().ok().cloned();
     if let Err(error) = quick_check_result {
         let timed_out = sqlite_query_was_interrupted(&error);
@@ -690,7 +804,11 @@ fn inspect_sqlite_readonly(bytes: &[u8]) -> Option<SqliteDiagnostics> {
             status: sqlite_query_error_status(&error).to_string(),
             sqlite_version,
             schema_objects: Vec::new(),
-            quick_check: if timed_out { Some(SQLITE_TIMEOUT_LABEL.to_string()) } else { None },
+            quick_check: if timed_out {
+                Some(SQLITE_TIMEOUT_LABEL.to_string())
+            } else {
+                None
+            },
             wal: Some(inspect_sqlite_wal(None)),
             note: if timed_out {
                 format!(
@@ -756,7 +874,10 @@ fn find_zstd_skippable_frames(bytes: &[u8]) -> Vec<ZstdSkippableFrame> {
     let mut offset = 0_usize;
     while offset.saturating_add(4) <= bytes.len() {
         let magic = u32::from_le_bytes([
-            bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3],
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
         ]);
         if !(ZSTD_SKIPPABLE_MAGIC_BASE..=ZSTD_SKIPPABLE_MAGIC_BASE + 15).contains(&magic) {
             offset += 1;
@@ -779,7 +900,10 @@ fn find_zstd_skippable_frames(bytes: &[u8]) -> Vec<ZstdSkippableFrame> {
         }
 
         let declared_payload_bytes = u32::from_le_bytes([
-            bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7],
+            bytes[offset + 4],
+            bytes[offset + 5],
+            bytes[offset + 6],
+            bytes[offset + 7],
         ]) as usize;
         let available_to_eof = remaining - 8;
         let complete = declared_payload_bytes <= available_to_eof;
@@ -790,14 +914,19 @@ fn find_zstd_skippable_frames(bytes: &[u8]) -> Vec<ZstdSkippableFrame> {
         // following truncated frame is not accidentally counted as payload.
         let next_header = (offset + 8..=bytes.len().saturating_sub(4)).find(|candidate| {
             let candidate_magic = u32::from_le_bytes([
-                bytes[*candidate], bytes[*candidate + 1], bytes[*candidate + 2], bytes[*candidate + 3],
+                bytes[*candidate],
+                bytes[*candidate + 1],
+                bytes[*candidate + 2],
+                bytes[*candidate + 3],
             ]);
             (ZSTD_SKIPPABLE_MAGIC_BASE..=ZSTD_SKIPPABLE_MAGIC_BASE + 15).contains(&candidate_magic)
         });
         let available_payload_bytes = if complete {
             declared_payload_bytes
         } else {
-            next_header.map(|next| next - (offset + 8)).unwrap_or(available_to_eof)
+            next_header
+                .map(|next| next - (offset + 8))
+                .unwrap_or(available_to_eof)
         };
 
         frames.push(ZstdSkippableFrame {
@@ -815,7 +944,9 @@ fn find_zstd_skippable_frames(bytes: &[u8]) -> Vec<ZstdSkippableFrame> {
         });
 
         if complete {
-            offset = offset.saturating_add(8).saturating_add(declared_payload_bytes);
+            offset = offset
+                .saturating_add(8)
+                .saturating_add(declared_payload_bytes);
         } else if let Some(next) = next_header {
             offset = next;
         } else {
@@ -825,7 +956,6 @@ fn find_zstd_skippable_frames(bytes: &[u8]) -> Vec<ZstdSkippableFrame> {
     frames
 }
 
-
 const TRANSFORM_SAMPLE_BYTES: usize = 64 * 1024;
 const TRANSFORM_BLOCK_BYTES: usize = 4 * 1024;
 const REPEATING_XOR_MIN_KEY_LENGTH: usize = 1;
@@ -834,22 +964,39 @@ const REPEATING_XOR_SEGMENT_BYTES: usize = 8 * 1024;
 const REPEATING_XOR_SEGMENT_COUNT: usize = 8;
 
 fn mean_value(values: &[f64]) -> f64 {
-    if values.is_empty() { 0.0 } else { values.iter().sum::<f64>() / values.len() as f64 }
+    if values.is_empty() {
+        0.0
+    } else {
+        values.iter().sum::<f64>() / values.len() as f64
+    }
 }
 
 fn block_profile(bytes: &[u8]) -> BlockProfileDiagnostics {
-    let blocks = bytes.chunks(TRANSFORM_BLOCK_BYTES).enumerate().map(|(block_index, chunk)| BlockProfileEntry {
-        block_index,
-        offset_bytes: block_index * TRANSFORM_BLOCK_BYTES,
-        size_bytes: chunk.len(),
-        entropy_bits_per_byte: byte_entropy(chunk),
-        printable_ascii_percent: byte_percent(chunk, |byte| (0x20..=0x7e).contains(&byte)),
-        zero_byte_percent: byte_percent(chunk, |byte| byte == 0),
-        unique_byte_values: unique_byte_count(chunk),
-    }).collect::<Vec<_>>();
-    let entropies = blocks.iter().map(|block| block.entropy_bits_per_byte).collect::<Vec<_>>();
-    let printable = blocks.iter().map(|block| block.printable_ascii_percent).collect::<Vec<_>>();
-    let zeroes = blocks.iter().map(|block| block.zero_byte_percent).collect::<Vec<_>>();
+    let blocks = bytes
+        .chunks(TRANSFORM_BLOCK_BYTES)
+        .enumerate()
+        .map(|(block_index, chunk)| BlockProfileEntry {
+            block_index,
+            offset_bytes: block_index * TRANSFORM_BLOCK_BYTES,
+            size_bytes: chunk.len(),
+            entropy_bits_per_byte: byte_entropy(chunk),
+            printable_ascii_percent: byte_percent(chunk, |byte| (0x20..=0x7e).contains(&byte)),
+            zero_byte_percent: byte_percent(chunk, |byte| byte == 0),
+            unique_byte_values: unique_byte_count(chunk),
+        })
+        .collect::<Vec<_>>();
+    let entropies = blocks
+        .iter()
+        .map(|block| block.entropy_bits_per_byte)
+        .collect::<Vec<_>>();
+    let printable = blocks
+        .iter()
+        .map(|block| block.printable_ascii_percent)
+        .collect::<Vec<_>>();
+    let zeroes = blocks
+        .iter()
+        .map(|block| block.zero_byte_percent)
+        .collect::<Vec<_>>();
     BlockProfileDiagnostics {
         block_size_bytes: TRANSFORM_BLOCK_BYTES,
         block_count: blocks.len(),
@@ -868,39 +1015,47 @@ fn text_likeness_weight(byte: u8) -> f64 {
         b'\n' | b'\r' | b'\t' => 1.1,
         b'e' | b't' | b'a' | b'o' | b'i' | b'n' => 2.9,
         b'E' | b'T' | b'A' | b'O' | b'I' | b'N' => 2.4,
-        b's' | b'h' | b'r' | b'd' | b'l' | b'u'
-        | b'S' | b'H' | b'R' | b'D' | b'L' | b'U' => 2.0,
+        b's' | b'h' | b'r' | b'd' | b'l' | b'u' | b'S' | b'H' | b'R' | b'D' | b'L' | b'U' => 2.0,
         b'a'..=b'z' | b'A'..=b'Z' => 1.7,
         b'0'..=b'9' => 0.8,
-        b'.' | b',' | b';' | b':' | b'!' | b'?' | b'\'' | b'"'
-        | b'(' | b')' | b'[' | b']' | b'{' | b'}'
-        | b'/' | b'\\' | b'-' | b'_' => 0.7,
+        b'.' | b',' | b';' | b':' | b'!' | b'?' | b'\'' | b'"' | b'(' | b')' | b'[' | b']'
+        | b'{' | b'}' | b'/' | b'\\' | b'-' | b'_' => 0.7,
         0x20..=0x7e => 0.0,
         _ => -4.0,
     }
 }
 
 fn text_likeness_score(total_weight: f64, count: usize) -> f64 {
-    if count == 0 { return 0.0; }
+    if count == 0 {
+        return 0.0;
+    }
     let average_weight = total_weight / count as f64;
     (((average_weight + 4.0) / 8.0) * 100.0).clamp(0.0, 100.0)
 }
 
 fn evenly_spaced_sample(bytes: &[u8], maximum: usize) -> Vec<u8> {
-    if bytes.len() <= maximum { return bytes.to_vec(); }
+    if bytes.len() <= maximum {
+        return bytes.to_vec();
+    }
     let sample_count = maximum.max(2).min(bytes.len());
-    (0..sample_count).map(|index| {
-        let source_index = index * (bytes.len() - 1) / (sample_count - 1);
-        bytes[source_index]
-    }).collect()
+    (0..sample_count)
+        .map(|index| {
+            let source_index = index * (bytes.len() - 1) / (sample_count - 1);
+            bytes[source_index]
+        })
+        .collect()
 }
 
 fn sqlite_magic_xor_key(bytes: &[u8]) -> Option<u8> {
     const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
     let first = *bytes.first()?;
     let key = first ^ SQLITE_HEADER[0];
-    bytes.get(..SQLITE_HEADER.len())?.iter().zip(SQLITE_HEADER.iter())
-        .all(|(actual, expected)| (*actual ^ key) == *expected).then_some(key)
+    bytes
+        .get(..SQLITE_HEADER.len())?
+        .iter()
+        .zip(SQLITE_HEADER.iter())
+        .all(|(actual, expected)| (*actual ^ key) == *expected)
+        .then_some(key)
 }
 
 fn score_single_byte_xor(sample: &[u8], key: u8) -> XorCandidate {
@@ -909,12 +1064,18 @@ fn score_single_byte_xor(sample: &[u8], key: u8) -> XorCandidate {
     for byte in sample {
         let decoded = *byte ^ key;
         total_weight += text_likeness_weight(decoded);
-        if (0x20..=0x7e).contains(&decoded) { printable_count += 1; }
+        if (0x20..=0x7e).contains(&decoded) {
+            printable_count += 1;
+        }
     }
     XorCandidate {
         key_byte: key,
         text_score: text_likeness_score(total_weight, sample.len()),
-        printable_ascii_percent: if sample.is_empty() { 0.0 } else { printable_count as f64 * 100.0 / sample.len() as f64 },
+        printable_ascii_percent: if sample.is_empty() {
+            0.0
+        } else {
+            printable_count as f64 * 100.0 / sample.len() as f64
+        },
         sqlite_magic_match: false,
     }
 }
@@ -922,11 +1083,21 @@ fn score_single_byte_xor(sample: &[u8], key: u8) -> XorCandidate {
 fn single_byte_xor_diagnostics(bytes: &[u8]) -> SingleByteXorDiagnostics {
     let sample = evenly_spaced_sample(bytes, TRANSFORM_SAMPLE_BYTES);
     let magic_key = sqlite_magic_xor_key(bytes);
-    let mut candidates = (0_u16..=255).map(|key| score_single_byte_xor(&sample, key as u8)).collect::<Vec<_>>();
-    for candidate in &mut candidates { candidate.sqlite_magic_match = magic_key == Some(candidate.key_byte); }
+    let mut candidates = (0_u16..=255)
+        .map(|key| score_single_byte_xor(&sample, key as u8))
+        .collect::<Vec<_>>();
+    for candidate in &mut candidates {
+        candidate.sqlite_magic_match = magic_key == Some(candidate.key_byte);
+    }
     candidates.sort_by(|left, right| {
-        right.text_score.total_cmp(&left.text_score)
-            .then_with(|| right.printable_ascii_percent.total_cmp(&left.printable_ascii_percent))
+        right
+            .text_score
+            .total_cmp(&left.text_score)
+            .then_with(|| {
+                right
+                    .printable_ascii_percent
+                    .total_cmp(&left.printable_ascii_percent)
+            })
             .then_with(|| left.key_byte.cmp(&right.key_byte))
     });
     candidates.truncate(5);
@@ -947,16 +1118,25 @@ fn single_byte_xor_diagnostics(bytes: &[u8]) -> SingleByteXorDiagnostics {
 }
 
 fn repeating_key_segments(bytes: &[u8]) -> Vec<(usize, Vec<u8>)> {
-    if bytes.len() <= TRANSFORM_SAMPLE_BYTES { return vec![(0, bytes.to_vec())]; }
-    let segment_count = REPEATING_XOR_SEGMENT_COUNT.min(bytes.len().div_ceil(REPEATING_XOR_SEGMENT_BYTES)).max(2);
+    if bytes.len() <= TRANSFORM_SAMPLE_BYTES {
+        return vec![(0, bytes.to_vec())];
+    }
+    let segment_count = REPEATING_XOR_SEGMENT_COUNT
+        .min(bytes.len().div_ceil(REPEATING_XOR_SEGMENT_BYTES))
+        .max(2);
     let segment_len = REPEATING_XOR_SEGMENT_BYTES.min(bytes.len());
-    (0..segment_count).map(|index| {
-        let start = (bytes.len() - segment_len) * index / (segment_count - 1);
-        (start, bytes[start..start + segment_len].to_vec())
-    }).collect()
+    (0..segment_count)
+        .map(|index| {
+            let start = (bytes.len() - segment_len) * index / (segment_count - 1);
+            (start, bytes[start..start + segment_len].to_vec())
+        })
+        .collect()
 }
 
-fn repeating_key_xor_candidate(segments: &[(usize, Vec<u8>)], key_length: usize) -> RepeatingKeyXorCandidate {
+fn repeating_key_xor_candidate(
+    segments: &[(usize, Vec<u8>)],
+    key_length: usize,
+) -> RepeatingKeyXorCandidate {
     let mut histograms = [[0_usize; 256]; REPEATING_XOR_MAX_KEY_LENGTH];
     for (segment_start, segment) in segments {
         for (index, byte) in segment.iter().enumerate() {
@@ -970,10 +1150,17 @@ fn repeating_key_xor_candidate(segments: &[(usize, Vec<u8>)], key_length: usize)
         let mut best_key = 0_u8;
         let mut best_weight = f64::NEG_INFINITY;
         for candidate_key in 0_u16..=255 {
-            let weight = histogram.iter().enumerate()
-                .map(|(source_byte, count)| *count as f64 * text_likeness_weight((source_byte as u8) ^ candidate_key as u8))
+            let weight = histogram
+                .iter()
+                .enumerate()
+                .map(|(source_byte, count)| {
+                    *count as f64 * text_likeness_weight((source_byte as u8) ^ candidate_key as u8)
+                })
                 .sum::<f64>();
-            if weight > best_weight { best_weight = weight; best_key = candidate_key as u8; }
+            if weight > best_weight {
+                best_weight = weight;
+                best_key = candidate_key as u8;
+            }
         }
         key.push(best_key);
     }
@@ -987,8 +1174,12 @@ fn repeating_key_xor_candidate(segments: &[(usize, Vec<u8>)], key_length: usize)
             let decoded = *byte ^ key[(segment_start + index) % key_length];
             total_weight += text_likeness_weight(decoded);
             total_bytes += 1;
-            if (0x20..=0x7e).contains(&decoded) { printable_count += 1; }
-            if decoded.is_ascii_alphabetic() || decoded == b' ' { letters_and_spaces_count += 1; }
+            if (0x20..=0x7e).contains(&decoded) {
+                printable_count += 1;
+            }
+            if decoded.is_ascii_alphabetic() || decoded == b' ' {
+                letters_and_spaces_count += 1;
+            }
         }
     }
 
@@ -996,8 +1187,16 @@ fn repeating_key_xor_candidate(segments: &[(usize, Vec<u8>)], key_length: usize)
         key_length,
         key_hex: hex::encode(key),
         text_score: text_likeness_score(total_weight, total_bytes),
-        printable_ascii_percent: if total_bytes == 0 { 0.0 } else { printable_count as f64 * 100.0 / total_bytes as f64 },
-        letters_and_spaces_percent: if total_bytes == 0 { 0.0 } else { letters_and_spaces_count as f64 * 100.0 / total_bytes as f64 },
+        printable_ascii_percent: if total_bytes == 0 {
+            0.0
+        } else {
+            printable_count as f64 * 100.0 / total_bytes as f64
+        },
+        letters_and_spaces_percent: if total_bytes == 0 {
+            0.0
+        } else {
+            letters_and_spaces_count as f64 * 100.0 / total_bytes as f64
+        },
     }
 }
 
@@ -1005,7 +1204,8 @@ fn repeating_key_xor_diagnostics(bytes: &[u8]) -> RepeatingKeyXorDiagnostics {
     let segments = repeating_key_segments(bytes);
     let sampled_bytes = segments.iter().map(|(_, segment)| segment.len()).sum();
     let candidates = (REPEATING_XOR_MIN_KEY_LENGTH..=REPEATING_XOR_MAX_KEY_LENGTH)
-        .map(|key_length| repeating_key_xor_candidate(&segments, key_length)).collect::<Vec<_>>();
+        .map(|key_length| repeating_key_xor_candidate(&segments, key_length))
+        .collect::<Vec<_>>();
     RepeatingKeyXorDiagnostics {
         min_key_length: REPEATING_XOR_MIN_KEY_LENGTH,
         max_key_length: REPEATING_XOR_MAX_KEY_LENGTH,
@@ -1058,7 +1258,12 @@ fn zstd_frame_size_error_status(error_code: usize) -> (&'static str, String) {
     if lower.contains("src size is incorrect") || lower.contains("source size is incorrect") {
         ("incomplete", format!("Zstandard signature is present, but the frame is truncated or incomplete: {message}"))
     } else {
-        ("signature-only", format!("Zstandard magic is present, but the bytes do not form a valid frame: {message}"))
+        (
+            "signature-only",
+            format!(
+                "Zstandard magic is present, but the bytes do not form a valid frame: {message}"
+            ),
+        )
     }
 }
 
@@ -1096,9 +1301,14 @@ fn zstd_declared_window_size(payload: &[u8]) -> Option<u64> {
 fn probe_zstd_frame(bytes: &[u8], offset: usize, remaining_budget: u64) -> ZstdProbe {
     let Some(payload) = bytes.get(offset..) else {
         return ZstdProbe {
-            offset, status: "signature-only".to_string(), frame_content_size_bytes: None,
-            compressed_frame_size_bytes: None, trailing_bytes_after_frame: None,
-            observed_output_bytes: None, note: "Candidate offset is outside the file.".to_string(), decoded: None,
+            offset,
+            status: "signature-only".to_string(),
+            frame_content_size_bytes: None,
+            compressed_frame_size_bytes: None,
+            trailing_bytes_after_frame: None,
+            observed_output_bytes: None,
+            note: "Candidate offset is outside the file.".to_string(),
+            decoded: None,
         };
     };
 
@@ -1124,19 +1334,28 @@ fn probe_zstd_frame(bytes: &[u8], offset: usize, remaining_budget: u64) -> ZstdP
         Err(error_code) => {
             let (status, note) = zstd_frame_size_error_status(error_code);
             return ZstdProbe {
-                offset, status: status.to_string(), frame_content_size_bytes: declared_size,
-                compressed_frame_size_bytes: None, trailing_bytes_after_frame: None,
-                observed_output_bytes: None, note, decoded: None,
+                offset,
+                status: status.to_string(),
+                frame_content_size_bytes: declared_size,
+                compressed_frame_size_bytes: None,
+                trailing_bytes_after_frame: None,
+                observed_output_bytes: None,
+                note,
+                decoded: None,
             };
         }
     };
 
     if frame_size == 0 || frame_size > payload.len() {
         return ZstdProbe {
-            offset, status: "signature-only".to_string(), frame_content_size_bytes: declared_size,
-            compressed_frame_size_bytes: None, trailing_bytes_after_frame: None,
+            offset,
+            status: "signature-only".to_string(),
+            frame_content_size_bytes: declared_size,
+            compressed_frame_size_bytes: None,
+            trailing_bytes_after_frame: None,
             observed_output_bytes: None,
-            note: "Zstandard magic was found, but the reported frame boundary is invalid.".to_string(),
+            note: "Zstandard magic was found, but the reported frame boundary is invalid."
+                .to_string(),
             decoded: None,
         };
     }
@@ -1154,11 +1373,16 @@ fn probe_zstd_frame(bytes: &[u8], offset: usize, remaining_budget: u64) -> ZstdP
 
     if declared_size.is_some_and(|size| size > output_limit) {
         return ZstdProbe {
-            offset, status: "limit-hit".to_string(), frame_content_size_bytes: declared_size,
+            offset,
+            status: "limit-hit".to_string(),
+            frame_content_size_bytes: declared_size,
             compressed_frame_size_bytes: Some(frame_size),
             trailing_bytes_after_frame: Some(payload.len() - frame_size),
             observed_output_bytes: None,
-            note: format!("Declared output exceeds the remaining {} MiB per-file output budget.", output_limit / (1024 * 1024)),
+            note: format!(
+                "Declared output exceeds the remaining {} MiB per-file output budget.",
+                output_limit / (1024 * 1024)
+            ),
             decoded: None,
         };
     }
@@ -1249,10 +1473,14 @@ fn probe_zstd_frame(bytes: &[u8], offset: usize, remaining_budget: u64) -> ZstdP
                     ("decode-failed", format!("Frame boundary was measured, but decompression failed: {error_text}. Partial output ({observed} bytes) was discarded."))
                 };
                 return ZstdProbe {
-                    offset, status: status.to_string(), frame_content_size_bytes: declared_size,
+                    offset,
+                    status: status.to_string(),
+                    frame_content_size_bytes: declared_size,
                     compressed_frame_size_bytes: Some(frame_size),
                     trailing_bytes_after_frame: Some(payload.len() - frame_size),
-                    observed_output_bytes: Some(observed), note, decoded: None,
+                    observed_output_bytes: Some(observed),
+                    note,
+                    decoded: None,
                 };
             }
         }
@@ -1270,15 +1498,28 @@ fn probe_zstd_frame(bytes: &[u8], offset: usize, remaining_budget: u64) -> ZstdP
         None => format!("Frame decoded completely; content size was not declared. Actual output size: {decoded_size}."),
     };
     ZstdProbe {
-        offset, status: status.to_string(), frame_content_size_bytes: declared_size,
+        offset,
+        status: status.to_string(),
+        frame_content_size_bytes: declared_size,
         compressed_frame_size_bytes: Some(frame_size),
         trailing_bytes_after_frame: Some(payload.len() - frame_size),
-        observed_output_bytes: Some(decoded_size), note,
+        observed_output_bytes: Some(decoded_size),
+        note,
         decoded: Some(byte_diagnostics(&output)),
     }
 }
 
-fn inspect_bytes(bytes: &[u8]) -> (ByteDiagnostics, Vec<String>, Vec<String>, usize, usize, usize, Vec<ZstdProbe>) {
+fn inspect_bytes(
+    bytes: &[u8],
+) -> (
+    ByteDiagnostics,
+    Vec<String>,
+    Vec<String>,
+    usize,
+    usize,
+    usize,
+    Vec<ZstdProbe>,
+) {
     let plxe_offsets = find_signature_offsets(bytes, b"PLXE");
     let zstd_offsets = find_signature_offsets(bytes, ZSTD_MAGIC);
     let mut remaining_budget = MAX_DECOMPRESSED_BYTES;
@@ -1312,7 +1553,11 @@ fn inspect_bytes(bytes: &[u8]) -> (ByteDiagnostics, Vec<String>, Vec<String>, us
         let probe = probe_zstd_frame(bytes, *offset, remaining_budget);
         if let Some(decoded) = probe.decoded.as_ref() {
             remaining_budget = remaining_budget.saturating_sub(decoded.size_bytes as u64);
-        } else if probe.status == "limit-hit" && probe.observed_output_bytes.is_some_and(|size| size > remaining_budget) {
+        } else if probe.status == "limit-hit"
+            && probe
+                .observed_output_bytes
+                .is_some_and(|size| size > remaining_budget)
+        {
             remaining_budget = 0;
         }
         if let Some(frame_size) = probe.compressed_frame_size_bytes {
@@ -1324,7 +1569,8 @@ fn inspect_bytes(bytes: &[u8]) -> (ByteDiagnostics, Vec<String>, Vec<String>, us
     }
 
     let header_words = plxe_header_words(bytes, &plxe_offsets, &zstd_offsets, &probes);
-    let decoded_size_matches = plxe_header_decoded_size_matches(bytes, &plxe_offsets, &zstd_offsets, &probes);
+    let decoded_size_matches =
+        plxe_header_decoded_size_matches(bytes, &plxe_offsets, &zstd_offsets, &probes);
     (
         byte_diagnostics(bytes),
         header_words,
@@ -1337,19 +1583,40 @@ fn inspect_bytes(bytes: &[u8]) -> (ByteDiagnostics, Vec<String>, Vec<String>, us
 }
 
 fn detect_file_format(bytes: &[u8]) -> String {
-    if bytes.starts_with(b"SQLite format 3\0") { return "SQLite 3 database".to_string(); }
-    if bytes.starts_with(b"PK\x03\x04") { return "ZIP archive".to_string(); }
-    if bytes.starts_with(&[0x1f, 0x8b]) { return "GZIP compressed data".to_string(); }
-    if bytes.starts_with(b"bplist00") { return "Apple binary property list".to_string(); }
-    let first_non_whitespace = bytes.iter().copied().find(|byte| !byte.is_ascii_whitespace());
+    if bytes.starts_with(b"SQLite format 3\0") {
+        return "SQLite 3 database".to_string();
+    }
+    if bytes.starts_with(b"PK\x03\x04") {
+        return "ZIP archive".to_string();
+    }
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        return "GZIP compressed data".to_string();
+    }
+    if bytes.starts_with(b"bplist00") {
+        return "Apple binary property list".to_string();
+    }
+    let first_non_whitespace = bytes
+        .iter()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace());
     if matches!(first_non_whitespace, Some(b'{' | b'[')) {
         return "JSON-like text (not parsed)".to_string();
     }
-    if first_non_whitespace == Some(b'<') { return "XML-like text".to_string(); }
-    if bytes.starts_with(b"UnityFS") { return "UnityFS asset bundle".to_string(); }
-    if bytes.starts_with(ZSTD_MAGIC) { return "Zstandard frame".to_string(); }
-    if bytes.starts_with(b"PLXE") { return "Playrix PLXE container (payload not decoded)".to_string(); }
-    if bytes.starts_with(b"ENC") { return "Unknown binary (ENC prefix)".to_string(); }
+    if first_non_whitespace == Some(b'<') {
+        return "XML-like text".to_string();
+    }
+    if bytes.starts_with(b"UnityFS") {
+        return "UnityFS asset bundle".to_string();
+    }
+    if bytes.starts_with(ZSTD_MAGIC) {
+        return "Zstandard frame".to_string();
+    }
+    if bytes.starts_with(b"PLXE") {
+        return "Playrix PLXE container (payload not decoded)".to_string();
+    }
+    if bytes.starts_with(b"ENC") {
+        return "Unknown binary (ENC prefix)".to_string();
+    }
     "Unknown binary format".to_string()
 }
 
@@ -1357,22 +1624,39 @@ fn list_devices_inner() -> Result<Vec<DeviceInfo>, String> {
     let adb = adb_executable();
     let output = run_adb(&adb, &["devices"])?;
     if !output.status.success() {
-        return Err(format!("ADB device discovery failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
+        return Err(format!(
+            "ADB device discovery failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
     }
 
     let mut devices = Vec::new();
     for line in String::from_utf8_lossy(&output.stdout).lines().skip(1) {
         let mut fields = line.split_whitespace();
-        let Some(serial) = fields.next() else { continue };
+        let Some(serial) = fields.next() else {
+            continue;
+        };
         let state = fields.next().unwrap_or_default();
-        if state != "device" || !is_allowed_emulator_serial(serial) { continue; }
+        if state != "device" || !is_allowed_emulator_serial(serial) {
+            continue;
+        }
 
         let package = run_adb_for_device(&adb, serial, &["shell", "pm", "path", GAME_PACKAGE]);
-        let game_installed = package.as_ref().map(|r| r.status.success() && String::from_utf8_lossy(&r.stdout).contains("package:")).unwrap_or(false);
+        let game_installed = package
+            .as_ref()
+            .map(|r| r.status.success() && String::from_utf8_lossy(&r.stdout).contains("package:"))
+            .unwrap_or(false);
         let root = run_adb_for_device(&adb, serial, &["shell", "su", "-c", "id"]);
-        let root_available = root.as_ref().map(|r| r.status.success() && String::from_utf8_lossy(&r.stdout).contains("uid=0")).unwrap_or(false);
+        let root_available = root
+            .as_ref()
+            .map(|r| r.status.success() && String::from_utf8_lossy(&r.stdout).contains("uid=0"))
+            .unwrap_or(false);
 
-        devices.push(DeviceInfo { serial: serial.to_string(), game_installed, root_available });
+        devices.push(DeviceInfo {
+            serial: serial.to_string(),
+            game_installed,
+            root_available,
+        });
     }
     Ok(devices)
 }
@@ -1421,7 +1705,11 @@ fn verify_main_capture_unchanged(before: &[u8], after: &[u8]) -> Result<(), Stri
     }
 }
 
-fn verify_wal_capture_unchanged(before: &[u8], captured: &[u8], after: &[u8]) -> Result<(), String> {
+fn verify_wal_capture_unchanged(
+    before: &[u8],
+    captured: &[u8],
+    after: &[u8],
+) -> Result<(), String> {
     let before_hash = hash_hex(before);
     let captured_hash = hash_hex(captured);
     let after_hash = hash_hex(after);
@@ -1438,8 +1726,8 @@ fn list_vaults(app: AppHandle) -> Result<Vec<VaultListItem>, String> {
     fs::create_dir_all(&vault_dir)
         .map_err(|e| format!("Could not open the encrypted backup folder: {e}"))?;
 
-    let entries = fs::read_dir(&vault_dir)
-        .map_err(|e| format!("Could not list encrypted backups: {e}"))?;
+    let entries =
+        fs::read_dir(&vault_dir).map_err(|e| format!("Could not list encrypted backups: {e}"))?;
     let mut vaults = Vec::new();
 
     for entry in entries {
@@ -1448,17 +1736,21 @@ fn list_vaults(app: AppHandle) -> Result<Vec<VaultListItem>, String> {
         if !is_valid_vault_file_name(&file_name) {
             continue;
         }
-        let file_type = entry.file_type()
+        let file_type = entry
+            .file_type()
             .map_err(|e| format!("Could not inspect backup file: {e}"))?;
         if !file_type.is_file() {
             continue;
         }
-        let metadata = entry.metadata()
+        let metadata = entry
+            .metadata()
             .map_err(|e| format!("Could not inspect backup metadata: {e}"))?;
         if metadata.len() < 35 || metadata.len() > MAX_VAULT_BYTES {
             continue;
         }
-        let modified_at = metadata.modified().ok()
+        let modified_at = metadata
+            .modified()
+            .ok()
             .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
             .map(|duration| duration.as_secs())
             .unwrap_or_default();
@@ -1505,8 +1797,11 @@ fn export_vault(app: AppHandle, file_name: String) -> Result<Option<String>, Str
         let Some(target) = target else {
             return Ok(None);
         };
-        let extension = target.extension().and_then(|value| value.to_str())
-            .unwrap_or_default().to_ascii_lowercase();
+        let extension = target
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
         if extension != "gvault" {
             return Err("Choose a destination with the .gvault extension.".to_string());
         }
@@ -1525,12 +1820,19 @@ fn export_vault(app: AppHandle, file_name: String) -> Result<Option<String>, Str
 }
 
 #[tauri::command]
-fn inspect_vault(app: AppHandle, file_name: String, passphrase: String) -> Result<VaultInspection, String> {
+fn inspect_vault(
+    app: AppHandle,
+    file_name: String,
+    passphrase: String,
+) -> Result<VaultInspection, String> {
     if !is_valid_vault_file_name(&file_name) {
         return Err("Invalid backup file name.".to_string());
     }
     if passphrase.chars().count() < 12 || passphrase.len() > 256 {
-        return Err("Enter the original vault passphrase (at least 12 characters).".to_string());
+        return Err(
+            "Enter the original vault passphrase (12 characters minimum, 256 bytes maximum)."
+                .to_string(),
+        );
     }
     let source = app_vault_dir(&app)?.join(&file_name);
     let metadata = fs::symlink_metadata(&source)
@@ -1539,22 +1841,30 @@ fn inspect_vault(app: AppHandle, file_name: String, passphrase: String) -> Resul
         return Err("The selected backup is not a valid-sized regular vault file.".to_string());
     }
     let mut encrypted = Vec::with_capacity(metadata.len() as usize);
-    File::open(&source).and_then(|mut file| file.read_to_end(&mut encrypted))
+    File::open(&source)
+        .and_then(|mut file| file.read_to_end(&mut encrypted))
         .map_err(|e| format!("Could not read encrypted backup: {e}"))?;
     let plaintext = decrypt_vault(&passphrase, &encrypted)?;
     let snapshot: VaultSnapshot = serde_json::from_slice(&plaintext)
         .map_err(|_| "Decrypted backup has an unsupported snapshot structure.".to_string())?;
-    if snapshot.product != "GardenVault" || snapshot.package != GAME_PACKAGE || snapshot.schema_version != 1 {
+    if snapshot.product != "GardenVault"
+        || snapshot.package != GAME_PACKAGE
+        || snapshot.schema_version != 1
+    {
         return Err("Snapshot metadata is not a supported Gardenscapes capture.".to_string());
     }
     let capture_integrity = snapshot.capture_integrity.clone();
     let missing_optional_files = snapshot.missing_optional_files.clone();
     let mut decoded_files = Vec::new();
     for file in snapshot.files {
-        if !matches!(file.name.as_str(), "GameData.db" | "GameData.db.bak" | "GameData.db-wal") {
+        if !matches!(
+            file.name.as_str(),
+            "GameData.db" | "GameData.db.bak" | "GameData.db-wal"
+        ) {
             return Err("Snapshot contains an unexpected file entry.".to_string());
         }
-        let bytes = BASE64.decode(&file.content_base64)
+        let bytes = BASE64
+            .decode(&file.content_base64)
             .map_err(|_| "Snapshot contains invalid encoded file data.".to_string())?;
         if bytes.len() != file.size_bytes || hash_hex(&bytes) != file.sha256 {
             return Err(format!("Integrity check failed for {}.", file.name));
@@ -1562,13 +1872,22 @@ fn inspect_vault(app: AppHandle, file_name: String, passphrase: String) -> Resul
         decoded_files.push((file.name, bytes));
     }
 
-    let wal_diagnostics = decoded_files.iter()
+    let wal_diagnostics = decoded_files
+        .iter()
         .find(|(name, _)| name == GAME_WAL_FILE)
         .map(|(_, bytes)| inspect_sqlite_wal(Some(bytes)))
         .unwrap_or_else(|| inspect_sqlite_wal(None));
     let mut inspected = Vec::new();
     for (name, bytes) in decoded_files {
-        let (mut diagnostics, header_words, decoded_size_matches, zstd_candidates_attempted, zstd_candidates_skipped, zstd_candidates_overlapping_skipped, mut zstd_probes) = inspect_bytes(&bytes);
+        let (
+            mut diagnostics,
+            header_words,
+            decoded_size_matches,
+            zstd_candidates_attempted,
+            zstd_candidates_skipped,
+            zstd_candidates_overlapping_skipped,
+            mut zstd_probes,
+        ) = inspect_bytes(&bytes);
         if name == "GameData.db" {
             if let Some(sqlite) = diagnostics.sqlite_database.as_mut() {
                 sqlite.wal = Some(wal_diagnostics.clone());
@@ -1578,7 +1897,11 @@ fn inspect_vault(app: AppHandle, file_name: String, passphrase: String) -> Resul
                     " No companion GameData.db-wal file was present at capture time."
                 });
                 for probe in &mut zstd_probes {
-                    if let Some(decoded_sqlite) = probe.decoded.as_mut().and_then(|decoded| decoded.sqlite_database.as_mut()) {
+                    if let Some(decoded_sqlite) = probe
+                        .decoded
+                        .as_mut()
+                        .and_then(|decoded| decoded.sqlite_database.as_mut())
+                    {
                         decoded_sqlite.wal = Some(wal_diagnostics.clone());
                         decoded_sqlite.note.push_str(if wal_diagnostics.present {
                             " A companion WAL was captured and checked separately; its pages were not replayed."
@@ -1606,7 +1929,10 @@ fn inspect_vault(app: AppHandle, file_name: String, passphrase: String) -> Resul
     if inspected.is_empty() {
         return Err("Snapshot contains no save files.".to_string());
     }
-    let identical_files = inspected.len() > 1 && inspected.iter().all(|f| f.diagnostics.sha256 == inspected[0].diagnostics.sha256);
+    let identical_files = inspected.len() > 1
+        && inspected
+            .iter()
+            .all(|f| f.diagnostics.sha256 == inspected[0].diagnostics.sha256);
     Ok(VaultInspection {
         device_serial: snapshot.device_serial,
         captured_at: snapshot.captured_at,
@@ -1618,19 +1944,34 @@ fn inspect_vault(app: AppHandle, file_name: String, passphrase: String) -> Resul
 }
 
 #[tauri::command]
-fn read_profile(app: AppHandle, serial: String, passphrase: String) -> Result<ReadProfileResult, String> {
+fn read_profile(
+    app: AppHandle,
+    serial: String,
+    passphrase: String,
+) -> Result<ReadProfileResult, String> {
     if !is_allowed_emulator_serial(&serial) {
-        return Err("Unsupported device identifier. Choose a connected LDPlayer emulator.".to_string());
+        return Err(
+            "Unsupported device identifier. Choose a connected LDPlayer emulator.".to_string(),
+        );
     }
     if passphrase.chars().count() < 12 || passphrase.len() > 256 {
-        return Err("Use a vault passphrase of at least 12 characters (maximum 256 bytes).".to_string());
+        return Err(
+            "Use a vault passphrase of at least 12 characters (maximum 256 bytes).".to_string(),
+        );
     }
 
     let devices = list_devices_inner()?;
-    let device = devices.iter().find(|d| d.serial == serial)
-        .ok_or_else(|| "The selected emulator is no longer connected. Refresh the device list.".to_string())?;
-    if !device.game_installed { return Err("Gardenscapes is not installed on the selected emulator.".to_string()); }
-    if !device.root_available { return Err("Root access is unavailable. Enable LDPlayer root access and try again.".to_string()); }
+    let device = devices.iter().find(|d| d.serial == serial).ok_or_else(|| {
+        "The selected emulator is no longer connected. Refresh the device list.".to_string()
+    })?;
+    if !device.game_installed {
+        return Err("Gardenscapes is not installed on the selected emulator.".to_string());
+    }
+    if !device.root_available {
+        return Err(
+            "Root access is unavailable. Enable LDPlayer root access and try again.".to_string(),
+        );
+    }
 
     let adb = adb_executable();
     let process = run_adb_for_device(&adb, &serial, &["shell", "pidof", GAME_PACKAGE])?;
@@ -1643,10 +1984,20 @@ fn read_profile(app: AppHandle, serial: String, passphrase: String) -> Result<Re
     let mut vault_files = Vec::new();
 
     let main_bytes = pull_capture::capture_file(&adb, &serial, "GameData.db")?;
-    append_captured_file("GameData.db", main_bytes.clone(), &mut file_infos, &mut vault_files);
+    append_captured_file(
+        "GameData.db",
+        main_bytes.clone(),
+        &mut file_infos,
+        &mut vault_files,
+    );
 
     let backup_bytes = pull_capture::capture_file(&adb, &serial, "GameData.db.bak")?;
-    append_captured_file("GameData.db.bak", backup_bytes, &mut file_infos, &mut vault_files);
+    append_captured_file(
+        "GameData.db.bak",
+        backup_bytes,
+        &mut file_infos,
+        &mut vault_files,
+    );
 
     // Capture the optional WAL three times. All-absent means no WAL record is
     // written; all-present must hash identically. A presence transition or
@@ -1675,7 +2026,12 @@ fn read_profile(app: AppHandle, serial: String, passphrase: String) -> Result<Re
             verify_wal_capture_unchanged(&before, &captured, &after).map_err(|_| {
                 "Capture consistency check failed: GameData.db-wal changed during its read. No snapshot was saved; keep Gardenscapes closed and retry.".to_string()
             })?;
-            append_optional_captured_file(GAME_WAL_FILE, Some(captured), &mut file_infos, &mut vault_files);
+            append_optional_captured_file(
+                GAME_WAL_FILE,
+                Some(captured),
+                &mut file_infos,
+                &mut vault_files,
+            );
         }
         _ => {
             return Err("Capture consistency check failed: GameData.db-wal appeared or disappeared during its read. No snapshot was saved; keep Gardenscapes closed and retry.".to_string());
@@ -1683,7 +2039,10 @@ fn read_profile(app: AppHandle, serial: String, passphrase: String) -> Result<Re
     }
 
     let process_after = run_adb_for_device(&adb, &serial, &["shell", "pidof", GAME_PACKAGE])?;
-    if !String::from_utf8_lossy(&process_after.stdout).trim().is_empty() {
+    if !String::from_utf8_lossy(&process_after.stdout)
+        .trim()
+        .is_empty()
+    {
         return Err("Gardenscapes started during backup capture. No snapshot was saved; close the game and retry.".to_string());
     }
 
@@ -1697,19 +2056,26 @@ fn read_profile(app: AppHandle, serial: String, passphrase: String) -> Result<Re
         missing_optional_files: missing_optional_files.clone(),
         files: vault_files,
     };
-    let plaintext = serde_json::to_vec(&payload).map_err(|e| format!("Could not prepare encrypted snapshot: {e}"))?;
+    let plaintext = serde_json::to_vec(&payload)
+        .map_err(|e| format!("Could not prepare encrypted snapshot: {e}"))?;
     let encrypted = encrypt_vault(&passphrase, &plaintext)?;
 
     let vault_dir = app_vault_dir(&app)?;
-    fs::create_dir_all(&vault_dir).map_err(|e| format!("Could not create encrypted backup folder: {e}"))?;
+    fs::create_dir_all(&vault_dir)
+        .map_err(|e| format!("Could not create encrypted backup folder: {e}"))?;
     let stamp = Utc::now().format("%Y%m%d-%H%M%S-%3f");
     let file_name = format!("gardenscapes-{stamp}.gvault");
     let vault_path = vault_dir.join(&file_name);
     let temporary_path = vault_dir.join(format!("{file_name}.tmp"));
 
-    let mut output = OpenOptions::new().write(true).create_new(true).open(&temporary_path)
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary_path)
         .map_err(|e| format!("Could not create temporary vault file: {e}"))?;
-    output.write_all(&encrypted).and_then(|_| output.sync_all())
+    output
+        .write_all(&encrypted)
+        .and_then(|_| output.sync_all())
         .map_err(|e| format!("Could not write encrypted vault: {e}"))?;
     drop(output);
     fs::rename(&temporary_path, &vault_path)
@@ -1726,7 +2092,13 @@ fn read_profile(app: AppHandle, serial: String, passphrase: String) -> Result<Re
 
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![list_devices, list_vaults, export_vault, inspect_vault, read_profile])
+        .invoke_handler(tauri::generate_handler![
+            list_devices,
+            list_vaults,
+            export_vault,
+            inspect_vault,
+            read_profile
+        ])
         .run(tauri::generate_context!())
         .expect("error while running GardenVault");
 }
@@ -1754,12 +2126,16 @@ mod tests {
             _ => 4,
         };
         let fcs_offset = 5 + (if single_segment { 0 } else { 1 }) + dict_len;
-        frame.splice(fcs_offset..fcs_offset + old_fcs_len, desired_size.to_le_bytes());
+        frame.splice(
+            fcs_offset..fcs_offset + old_fcs_len,
+            desired_size.to_le_bytes(),
+        );
         frame[4] = (descriptor & 0x3f) | 0x80;
     }
 
     fn make_windowed_zstd_frame(window_log: u32, payload: &[u8]) -> Vec<u8> {
-        let mut encoder = zstd::stream::Encoder::new(Vec::new(), 1).expect("create streaming encoder");
+        let mut encoder =
+            zstd::stream::Encoder::new(Vec::new(), 1).expect("create streaming encoder");
         encoder.window_log(window_log).expect("set encoder window");
         encoder.write_all(payload).expect("write streaming payload");
         encoder.finish().expect("finish streaming frame")
@@ -1767,14 +2143,15 @@ mod tests {
 
     fn seeded_bytes(length: usize, seed: u64) -> Vec<u8> {
         let mut state = seed;
-        (0..length).map(|_| {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            (state >> 24) as u8
-        }).collect()
+        (0..length)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                (state >> 24) as u8
+            })
+            .collect()
     }
-
 
     #[test]
     fn block_profile_measures_each_four_kib_chunk_and_partial_tail() {
@@ -1799,10 +2176,15 @@ mod tests {
         const KEY: u8 = 0xA5;
         let mut bytes = b"SQLite format 3\0".to_vec();
         bytes.extend_from_slice(b"SQLite text fixture with ordinary printable content. ");
-        for byte in &mut bytes { *byte ^= KEY; }
+        for byte in &mut bytes {
+            *byte ^= KEY;
+        }
         let report = single_byte_xor_diagnostics(&bytes);
         assert_eq!(report.sqlite_magic_xor_key, Some(KEY));
-        assert!(report.top_candidates.iter().any(|candidate| candidate.key_byte == KEY && candidate.sqlite_magic_match));
+        assert!(report
+            .top_candidates
+            .iter()
+            .any(|candidate| candidate.key_byte == KEY && candidate.sqlite_magic_match));
         assert_eq!(report.sampled_bytes, bytes.len());
     }
 
@@ -1812,7 +2194,9 @@ mod tests {
         let key = b"ICE";
         let mut bytes = Vec::new();
         for _ in 0..1600 {
-            for byte in plain { bytes.push(*byte ^ key[bytes.len() % key.len()]); }
+            for byte in plain {
+                bytes.push(*byte ^ key[bytes.len() % key.len()]);
+            }
         }
         let report = repeating_key_xor_diagnostics(&bytes);
         assert_eq!(report.min_key_length, 1);
@@ -1830,9 +2214,8 @@ mod tests {
         // The decoded output Vec and SQLite's read-only deserialize copy coexist.
         // Snapshot/encrypted/plaintext/decoded source buffers and process overhead
         // are additional resident memory and are not covered by this calculation.
-        let peak_components = (MAX_DECOMPRESSED_BYTES * 2)
-            + MAX_ZSTD_WINDOW_BYTES
-            + MAX_DECOMPRESSOR_HEADROOM_BYTES;
+        let peak_components =
+            (MAX_DECOMPRESSED_BYTES * 2) + MAX_ZSTD_WINDOW_BYTES + MAX_DECOMPRESSOR_HEADROOM_BYTES;
         assert!(peak_components <= MAX_DECOMPRESSOR_WORKING_SET_BYTES);
         assert_eq!(peak_components, MAX_DECOMPRESSOR_WORKING_SET_BYTES);
         assert!(MAX_DECOMPRESSED_BYTES < 64 * 1024 * 1024);
@@ -1905,8 +2288,8 @@ mod tests {
             "capturedAt": "2026-11-18T14:58:25Z",
             "files": []
         });
-        let snapshot: VaultSnapshot = serde_json::from_value(old_snapshot)
-            .expect("legacy snapshots omit captureIntegrity");
+        let snapshot: VaultSnapshot =
+            serde_json::from_value(old_snapshot).expect("legacy snapshots omit captureIntegrity");
         assert!(snapshot.capture_integrity.is_none());
         assert!(snapshot.missing_optional_files.is_empty());
 
@@ -1920,15 +2303,24 @@ mod tests {
             missing_optional_files: vec![GAME_WAL_FILE.to_string()],
             files: Vec::new(),
         };
-        let current_metadata = serde_json::to_value(current_snapshot).expect("serialize current snapshot metadata");
-        assert_eq!(current_metadata["captureIntegrity"], "device-copy-pull-sha256-v1");
+        let current_metadata =
+            serde_json::to_value(current_snapshot).expect("serialize current snapshot metadata");
+        assert_eq!(
+            current_metadata["captureIntegrity"],
+            "device-copy-pull-sha256-v1"
+        );
         assert_eq!(current_metadata["missingOptionalFiles"][0], GAME_WAL_FILE);
-        assert!(current_metadata["files"].as_array().expect("file array").is_empty());
+        assert!(current_metadata["files"]
+            .as_array()
+            .expect("file array")
+            .is_empty());
     }
 
     #[test]
     fn vault_file_names_reject_paths_and_unexpected_extensions() {
-        assert!(is_valid_vault_file_name("gardenscapes-20261118-120000.gvault"));
+        assert!(is_valid_vault_file_name(
+            "gardenscapes-20261118-120000.gvault"
+        ));
         assert!(!is_valid_vault_file_name("../outside.gvault"));
         assert!(!is_valid_vault_file_name("C:\\outside.gvault"));
         assert!(!is_valid_vault_file_name("backup.txt"));
@@ -1937,16 +2329,29 @@ mod tests {
 
     #[test]
     fn file_signature_detection_is_read_only_and_conservative() {
-        assert_eq!(detect_file_format(b"SQLite format 3\0rest"), "SQLite 3 database");
+        assert_eq!(
+            detect_file_format(b"SQLite format 3\0rest"),
+            "SQLite 3 database"
+        );
         assert_eq!(detect_file_format(b"PK\x03\x04archive"), "ZIP archive");
-        assert_eq!(detect_file_format(b"not a known header"), "Unknown binary format");
-        assert_eq!(detect_file_format(b"PLXE\x04\x00\x00\x00"), "Playrix PLXE container (payload not decoded)");
-        assert!(find_embedded_signatures(b"prefixPLXEpayload").iter().any(|s| s.contains("PLXE")));
+        assert_eq!(
+            detect_file_format(b"not a known header"),
+            "Unknown binary format"
+        );
+        assert_eq!(
+            detect_file_format(b"PLXE\x04\x00\x00\x00"),
+            "Playrix PLXE container (payload not decoded)"
+        );
+        assert!(find_embedded_signatures(b"prefixPLXEpayload")
+            .iter()
+            .any(|s| s.contains("PLXE")));
         assert_eq!(byte_entropy(&[0_u8; 32]), 0.0);
         let all_values = (0_u8..=255).collect::<Vec<_>>();
         assert!((byte_entropy(&all_values) - 8.0).abs() < 0.0001);
         assert_eq!(unique_byte_count(&all_values), 256);
-        assert!(find_embedded_signatures(b"prefix\x28\xb5\x2f\xfdpayload").iter().any(|s| s.contains("Zstandard")));
+        assert!(find_embedded_signatures(b"prefix\x28\xb5\x2f\xfdpayload")
+            .iter()
+            .any(|s| s.contains("Zstandard")));
         assert!(entropy_assessment(7.99).contains("encryption or compression"));
     }
 
@@ -1956,21 +2361,34 @@ mod tests {
         bytes[12..16].copy_from_slice(b"PLXE");
         bytes[64 * 1024 + 9..64 * 1024 + 13].copy_from_slice(ZSTD_MAGIC);
         bytes[70 * 1024 - 8..70 * 1024 - 4].copy_from_slice(b"PLXE");
-        assert_eq!(find_signature_offsets(&bytes, b"PLXE"), vec![12, 70 * 1024 - 8]);
-        assert_eq!(find_signature_offsets(&bytes, ZSTD_MAGIC), vec![64 * 1024 + 9]);
+        assert_eq!(
+            find_signature_offsets(&bytes, b"PLXE"),
+            vec![12, 70 * 1024 - 8]
+        );
+        assert_eq!(
+            find_signature_offsets(&bytes, ZSTD_MAGIC),
+            vec![64 * 1024 + 9]
+        );
         let diagnostics = byte_diagnostics(&bytes);
         assert_eq!(diagnostics.size_mod_16, bytes.len() % 16);
         assert_eq!(diagnostics.size_mod_512, bytes.len() % 512);
         assert_eq!(diagnostics.size_mod_4096, bytes.len() % 4096);
         assert_eq!(diagnostics.tail_hex.len(), 64);
-        assert!(diagnostics.embedded_signatures.iter().any(|hit| hit.contains("0xC")));
-        assert!(diagnostics.embedded_signatures.iter().any(|hit| hit.contains("0x117F8")));
+        assert!(diagnostics
+            .embedded_signatures
+            .iter()
+            .any(|hit| hit.contains("0xC")));
+        assert!(diagnostics
+            .embedded_signatures
+            .iter()
+            .any(|hit| hit.contains("0x117F8")));
     }
 
     #[test]
     fn zstd_probe_decodes_one_frame_and_ignores_trailing_data() {
         let original = b"SQLite format 3\0GardenVault test payload";
-        let compressed = zstd::stream::encode_all(Cursor::new(original), 1).expect("encode zstd test frame");
+        let compressed =
+            zstd::stream::encode_all(Cursor::new(original), 1).expect("encode zstd test frame");
         let mut bytes = b"prefixPLXE".to_vec();
         let frame_offset = bytes.len();
         bytes.extend_from_slice(&compressed);
@@ -1979,7 +2397,10 @@ mod tests {
         assert_eq!(probe.status, "decoded-size-matches");
         assert_eq!(probe.frame_content_size_bytes, Some(original.len() as u64));
         assert_eq!(probe.compressed_frame_size_bytes, Some(compressed.len()));
-        assert_eq!(probe.trailing_bytes_after_frame, Some(b"trailing-footer".len()));
+        assert_eq!(
+            probe.trailing_bytes_after_frame,
+            Some(b"trailing-footer".len())
+        );
         let decoded = probe.decoded.expect("decoded file diagnostics");
         assert_eq!(decoded.detected_format, "SQLite 3 database");
         assert_eq!(decoded.sha256, hash_hex(original));
@@ -1987,8 +2408,10 @@ mod tests {
 
     #[test]
     fn all_zstd_candidates_are_attempted_and_plxe_lengths_are_compared() {
-        let first = zstd::stream::encode_all(Cursor::new(b"first decoded payload"), 1).expect("first frame");
-        let second = zstd::stream::encode_all(Cursor::new(b"second decoded payload"), 1).expect("second frame");
+        let first = zstd::stream::encode_all(Cursor::new(b"first decoded payload"), 1)
+            .expect("first frame");
+        let second = zstd::stream::encode_all(Cursor::new(b"second decoded payload"), 1)
+            .expect("second frame");
         let mut bytes = b"PLXE\0\0\0\0".to_vec();
         let first_offset = bytes.len();
         bytes.extend_from_slice(&first);
@@ -1997,12 +2420,20 @@ mod tests {
         bytes.extend_from_slice(&second);
         bytes[4..8].copy_from_slice(&(first.len() as u32).to_le_bytes());
 
-        let (_, header_words, _decoded_size_matches, _attempted, skipped, _overlapping, probes) = inspect_bytes(&bytes);
-        assert_eq!(find_signature_offsets(&bytes, ZSTD_MAGIC), vec![first_offset, second_offset]);
+        let (_, header_words, _decoded_size_matches, _attempted, skipped, _overlapping, probes) =
+            inspect_bytes(&bytes);
+        assert_eq!(
+            find_signature_offsets(&bytes, ZSTD_MAGIC),
+            vec![first_offset, second_offset]
+        );
         assert_eq!(probes.len(), 2);
         assert_eq!(skipped, 0);
-        assert!(probes.iter().all(|probe| probe.status == "decoded-size-matches"));
-        assert!(header_words.iter().any(|word| word.contains("matches compressed Zstandard frame length")));
+        assert!(probes
+            .iter()
+            .all(|probe| probe.status == "decoded-size-matches"));
+        assert!(header_words
+            .iter()
+            .any(|word| word.contains("matches compressed Zstandard frame length")));
     }
 
     #[test]
@@ -2016,12 +2447,15 @@ mod tests {
         bytes[8..12].copy_from_slice(&(original.len() as u32).to_le_bytes());
         bytes.extend_from_slice(b"footer!");
 
-        let (_, header_words, decoded_matches, _attempted, skipped, _overlapping, probes) = inspect_bytes(&bytes);
+        let (_, header_words, decoded_matches, _attempted, skipped, _overlapping, probes) =
+            inspect_bytes(&bytes);
         assert_eq!(skipped, 0);
         assert_eq!(probes.len(), 1);
         assert_eq!(probes[0].offset, frame_offset);
         assert_eq!(probes[0].status, "decoded-size-matches");
-        assert!(header_words.iter().any(|word| word.contains("matches compressed Zstandard frame length")));
+        assert!(header_words
+            .iter()
+            .any(|word| word.contains("matches compressed Zstandard frame length")));
         assert_eq!(
             probes[0].decoded.as_ref().map(|decoded| decoded.size_bytes),
             Some(original.len()),
@@ -2065,7 +2499,8 @@ mod tests {
     #[test]
     fn declared_content_size_mismatches_are_reported_without_exposing_partial_output() {
         let small_actual = seeded_bytes(2 * 1024, 0xabc1);
-        let mut small_frame = zstd::stream::encode_all(Cursor::new(&small_actual), 1).expect("encode small frame");
+        let mut small_frame =
+            zstd::stream::encode_all(Cursor::new(&small_actual), 1).expect("encode small frame");
         rewrite_zstd_content_size(&mut small_frame, 1024 * 1024);
         let small_probe = probe_zstd_frame(&small_frame, 0, MAX_DECOMPRESSED_BYTES);
         assert_eq!(small_probe.frame_content_size_bytes, Some(1024 * 1024));
@@ -2073,7 +2508,8 @@ mod tests {
         assert!(small_probe.decoded.is_none());
 
         let large_actual = seeded_bytes(1024 * 1024, 0xabc2);
-        let mut large_frame = zstd::stream::encode_all(Cursor::new(&large_actual), 1).expect("encode large frame");
+        let mut large_frame =
+            zstd::stream::encode_all(Cursor::new(&large_actual), 1).expect("encode large frame");
         rewrite_zstd_content_size(&mut large_frame, 2 * 1024);
         let large_probe = probe_zstd_frame(&large_frame, 0, MAX_DECOMPRESSED_BYTES);
         assert_eq!(large_probe.frame_content_size_bytes, Some(2 * 1024));
@@ -2083,11 +2519,15 @@ mod tests {
 
     #[test]
     fn declared_output_over_limit_is_a_limit_hit_not_a_decode_failure() {
-        let mut frame = zstd::stream::encode_all(Cursor::new(b"tiny payload"), 1).expect("encode frame");
+        let mut frame =
+            zstd::stream::encode_all(Cursor::new(b"tiny payload"), 1).expect("encode frame");
         rewrite_zstd_content_size(&mut frame, (MAX_DECOMPRESSED_BYTES + 1) as u32);
         let probe = probe_zstd_frame(&frame, 0, MAX_DECOMPRESSED_BYTES);
         assert_eq!(probe.status, "limit-hit");
-        assert_eq!(probe.frame_content_size_bytes, Some(MAX_DECOMPRESSED_BYTES + 1));
+        assert_eq!(
+            probe.frame_content_size_bytes,
+            Some(MAX_DECOMPRESSED_BYTES + 1)
+        );
         assert!(probe.decoded.is_none());
     }
 
@@ -2095,11 +2535,17 @@ mod tests {
     fn high_ratio_zstd_output_bomb_hits_the_actual_streaming_output_cap() {
         let payload = vec![0_u8; MAX_DECOMPRESSED_BYTES as usize + 1];
         let frame = make_windowed_zstd_frame(24, &payload);
-        assert!(frame.len() < 256 * 1024, "high-ratio fixture should be small on disk");
+        assert!(
+            frame.len() < 256 * 1024,
+            "high-ratio fixture should be small on disk"
+        );
         let probe = probe_zstd_frame(&frame, 0, MAX_DECOMPRESSED_BYTES);
         assert_eq!(probe.status, "limit-hit");
         assert!(probe.observed_output_bytes.unwrap_or_default() > MAX_DECOMPRESSED_BYTES);
-        assert!(probe.decoded.is_none(), "partial bomb output must never be exposed as a complete decoded file");
+        assert!(
+            probe.decoded.is_none(),
+            "partial bomb output must never be exposed as a complete decoded file"
+        );
     }
 
     #[test]
@@ -2115,9 +2561,17 @@ mod tests {
         assert_eq!(declared_window, 1024 * 1024 * 1024);
         let probe = probe_zstd_frame(&frame, 0, MAX_DECOMPRESSED_BYTES);
         assert_eq!(probe.status, "limit-hit");
-        assert!(probe.compressed_frame_size_bytes.is_none(), "frame sizing must not be attempted");
-        assert!(probe.observed_output_bytes.is_none(), "no decompression output should exist");
-        assert!(probe.note.contains("before decoder creation and output-buffer allocation"));
+        assert!(
+            probe.compressed_frame_size_bytes.is_none(),
+            "frame sizing must not be attempted"
+        );
+        assert!(
+            probe.observed_output_bytes.is_none(),
+            "no decompression output should exist"
+        );
+        assert!(probe
+            .note
+            .contains("before decoder creation and output-buffer allocation"));
         assert!(probe.decoded.is_none());
     }
 
@@ -2128,18 +2582,25 @@ mod tests {
         let first = zstd::stream::encode_all(Cursor::new(&plain), 1).expect("encode outer frame");
         assert!(find_signature_offsets(&first, ZSTD_MAGIC).len() >= 2);
         let second_payload = b"second independent frame at the first frame boundary";
-        let second = zstd::stream::encode_all(Cursor::new(second_payload), 1).expect("encode second frame");
+        let second =
+            zstd::stream::encode_all(Cursor::new(second_payload), 1).expect("encode second frame");
         let second_offset = first.len();
         let mut joined = first;
         joined.extend_from_slice(&second);
 
-        let (_, _, _, attempted, skipped_by_cap, overlapping_skipped, probes) = inspect_bytes(&joined);
+        let (_, _, _, attempted, skipped_by_cap, overlapping_skipped, probes) =
+            inspect_bytes(&joined);
         assert_eq!(attempted, 2);
         assert_eq!(skipped_by_cap, 0);
         assert!(overlapping_skipped >= 1);
-        let nested = probes.iter().find(|p| p.status == "overlapping-signature-skipped");
+        let nested = probes
+            .iter()
+            .find(|p| p.status == "overlapping-signature-skipped");
         assert!(nested.is_some());
-        let following = probes.iter().find(|p| p.offset == second_offset).expect("following frame should be attempted");
+        let following = probes
+            .iter()
+            .find(|p| p.offset == second_offset)
+            .expect("following frame should be attempted");
         assert_eq!(following.status, "decoded-size-matches");
     }
 
@@ -2149,10 +2610,12 @@ mod tests {
         for index in 0..(MAX_ZSTD_PROBES + 8) {
             let payload = format!("separate zstd frame number {index}");
             joined.extend_from_slice(
-                &zstd::stream::encode_all(Cursor::new(payload.as_bytes()), 1).expect("encode frame")
+                &zstd::stream::encode_all(Cursor::new(payload.as_bytes()), 1)
+                    .expect("encode frame"),
             );
         }
-        let (_, _, _, attempted, skipped_by_cap, overlapping_skipped, probes) = inspect_bytes(&joined);
+        let (_, _, _, attempted, skipped_by_cap, overlapping_skipped, probes) =
+            inspect_bytes(&joined);
         assert_eq!(attempted, MAX_ZSTD_PROBES);
         assert_eq!(skipped_by_cap, 8);
         assert_eq!(overlapping_skipped, 0);
@@ -2166,7 +2629,10 @@ mod tests {
         let at_end = bytes.len() - 4;
         bytes[across_boundary..across_boundary + 4].copy_from_slice(ZSTD_MAGIC);
         bytes[at_end..].copy_from_slice(ZSTD_MAGIC);
-        assert_eq!(find_signature_offsets(&bytes, ZSTD_MAGIC), vec![across_boundary, at_end]);
+        assert_eq!(
+            find_signature_offsets(&bytes, ZSTD_MAGIC),
+            vec![across_boundary, at_end]
+        );
     }
 
     #[test]
@@ -2179,7 +2645,10 @@ mod tests {
                 bytes[offset..offset + 4].copy_from_slice(ZSTD_MAGIC);
             }
             let result = std::panic::catch_unwind(|| inspect_bytes(&bytes));
-            assert!(result.is_ok(), "inspection panicked on deterministic fuzz case {iteration}");
+            assert!(
+                result.is_ok(),
+                "inspection panicked on deterministic fuzz case {iteration}"
+            );
         }
     }
 
@@ -2195,9 +2664,13 @@ mod tests {
             [],
             |row| row.get::<_, i64>(0),
         );
-        let error = result.expect_err("the expired progress-handler deadline must interrupt the query");
+        let error =
+            result.expect_err("the expired progress-handler deadline must interrupt the query");
         assert!(sqlite_query_was_interrupted(&error));
-        assert_eq!(sqlite_query_error_status(&error), "inconclusive (time budget)");
+        assert_eq!(
+            sqlite_query_error_status(&error),
+            "inconclusive (time budget)"
+        );
         assert_eq!(SQLITE_TIMEOUT_LABEL, "inconclusive (time budget)");
     }
 
@@ -2206,16 +2679,24 @@ mod tests {
         let source = Connection::open_in_memory().expect("open synthetic SQLite database");
         source.execute_batch("CREATE TABLE test_items(id INTEGER PRIMARY KEY, value TEXT); INSERT INTO test_items(value) VALUES ('unchanged');")
             .expect("create synthetic schema");
-        let serialized = source.serialize(rusqlite::MAIN_DB).expect("serialize synthetic SQLite");
+        let serialized = source
+            .serialize(rusqlite::MAIN_DB)
+            .expect("serialize synthetic SQLite");
         let sqlite_bytes = serialized.to_vec();
         let original_hash = hash_hex(&sqlite_bytes);
 
-        let report = inspect_sqlite_readonly(&sqlite_bytes).expect("SQLite signature should be inspected");
+        let report =
+            inspect_sqlite_readonly(&sqlite_bytes).expect("SQLite signature should be inspected");
         assert!(report.opened_read_only);
         assert_eq!(report.quick_check.as_deref(), Some("ok"));
-        assert!(report.schema_objects.iter().any(|name| name == "test_items"));
+        assert!(report
+            .schema_objects
+            .iter()
+            .any(|name| name == "test_items"));
         assert!(report.note.contains("defensive mode"));
-        assert!(report.note.contains("extension loading was explicitly disabled"));
+        assert!(report
+            .note
+            .contains("extension loading was explicitly disabled"));
         assert!(report.note.contains("500 ms progress-handler budget"));
         assert_eq!(hash_hex(&sqlite_bytes), original_hash);
 
@@ -2250,7 +2731,9 @@ mod tests {
     #[test]
     fn sqlite_wal_mode_image_is_not_opened_without_replaying_wal() {
         let source = Connection::open_in_memory().expect("open SQLite database");
-        source.execute_batch("CREATE TABLE t(value INTEGER);").expect("create table");
+        source
+            .execute_batch("CREATE TABLE t(value INTEGER);")
+            .expect("create table");
         let serialized = source.serialize(rusqlite::MAIN_DB).expect("serialize");
         let mut bytes = serialized.to_vec();
         bytes[18] = 1;
@@ -2268,7 +2751,10 @@ mod tests {
         let original = b"GardenVault encrypted snapshot test";
         let encrypted = encrypt_vault("correct horse battery staple", original).expect("encrypt");
         assert!(encrypted.starts_with(VAULT_MAGIC));
-        assert_eq!(decrypt_vault_for_test("correct horse battery staple", &encrypted).expect("decrypt"), original);
+        assert_eq!(
+            decrypt_vault_for_test("correct horse battery staple", &encrypted).expect("decrypt"),
+            original
+        );
         assert!(decrypt_vault_for_test("incorrect password", &encrypted).is_err());
     }
 }
