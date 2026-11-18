@@ -2,18 +2,19 @@
 
 GardenVault is a local-first Windows desktop utility for reading Gardenscapes profile files from an authorized LDPlayer 14 instance and creating encrypted offline snapshots.
 
-## v1.0.0-rc.3 MVP
+## v1.0.0-rc.4 MVP
 
 - Detect connected LDPlayer emulators through ADB.
 - Verify the Gardenscapes package and root availability.
 - Read the observed `GameData.db` and `GameData.db.bak` files after the game process exits.
 - Encrypt both files in memory with Argon2id + AES-256-GCM before writing a single `.gvault` file to local app data.
+- Browse locally stored encrypted snapshots and export byte-identical encrypted copies through the Windows Save As dialog.
 - Never write into the Gardenscapes game directory.
 - No save data is sent to a cloud service.
 
 ## Compatibility limit
 
-The supplied save files have not been identified as standard SQLite. The app currently reports file sizes and SHA-256 hashes; it does not decode or edit coins, items, or level fields. Editing and live Apply remain disabled pending a verified format adapter.
+The supplied save files have not been identified as standard SQLite. The app currently reports file sizes and SHA-256 hashes; it does not decode or edit coins, items, or level fields. Backup export copies the encrypted container unchanged and does not restore it into the game. Editing and live Apply remain disabled pending a verified format adapter.
 
 ## Build on Windows
 
