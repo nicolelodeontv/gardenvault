@@ -97,7 +97,7 @@ jobs:
       - name: Upload unsigned Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: GardenVault-v1.0.0-rc.5-Windows-x64-unsigned
+          name: GardenVault-v1.0.0-rc.6-Windows-x64-unsigned
           path: |
             src-tauri/target/release/gardenvault.exe
             src-tauri/target/release/bundle/nsis/*-setup.exe
