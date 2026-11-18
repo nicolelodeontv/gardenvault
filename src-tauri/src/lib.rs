@@ -14,7 +14,7 @@ const MAX_SAVE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_VAULT_BYTES: u64 = (MAX_SAVE_BYTES as u64) * 3 + 1024 * 1024;
 const MAX_DECOMPRESSED_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ZSTD_PROBES: usize = 32;
-const ZSTD_MAGIC: &[u8; 4] = b"\\x28\\xb5\\x2f\\xfd";
+const ZSTD_MAGIC: &[u8; 4] = b"\x28\xb5\x2f\xfd";
 const VAULT_MAGIC: &[u8; 7] = b"GVLT001";
 
 #[derive(Debug, Serialize, Clone)]
@@ -280,13 +280,13 @@ fn find_embedded_signatures(bytes: &[u8]) -> Vec<String> {
     // Only signatures of at least three bytes are listed; two-byte zlib/gzip
     // prefixes are too collision-prone for useful embedded-hit reporting.
     const SIGNATURES: [(&str, &[u8]); 8] = [
-        ("SQLite", b"SQLite format 3\\0"),
+        ("SQLite", b"SQLite format 3\0"),
         ("Playrix PLXE wrapper", b"PLXE"),
-        ("ZIP", b"PK\\x03\\x04"),
+        ("ZIP", b"PK\x03\x04"),
         ("Zstandard", ZSTD_MAGIC),
-        ("LZ4 frame", b"\\x04\\x22\\x4d\\x18"),
-        ("PNG", b"\\x89PNG\\r\\n\\x1a\\n"),
-        ("JPEG", b"\\xff\\xd8\\xff"),
+        ("LZ4 frame", b"\x04\x22\x4d\x18"),
+        ("PNG", b"\x89PNG\r\n\x1a\n"),
+        ("JPEG", b"\xff\xd8\xff"),
         ("UnityFS", b"UnityFS"),
     ];
     let mut found = Vec::new();
