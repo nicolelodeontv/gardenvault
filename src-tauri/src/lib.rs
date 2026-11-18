@@ -1221,26 +1221,56 @@ fn read_profile(app: AppHandle, serial: String, passphrase: String) -> Result<Re
     let captured_at = Utc::now().to_rfc3339();
     let mut file_infos = Vec::new();
     let mut vault_files = Vec::new();
-    for file_name in ["GameData.db", "GameData.db.bak"] {
-        let bytes = capture_file(&adb, &serial, file_name)?;
-        let digest = hash_hex(&bytes);
-        file_infos.push(FileInfo { name: file_name.to_string(), size_bytes: bytes.len(), sha256: digest.clone() });
-        vault_files.push(VaultFile {
-            name: file_name.to_string(),
-            size_bytes: bytes.len(),
-            sha256: digest,
-            content_base64: BASE64.encode(&bytes),
-        });
-    }
+
+    let main_bytes = capture_file(&adb, &serial, "GameData.db")?;
+    let main_digest = hash_hex(&main_bytes);
+    file_infos.push(FileInfo { name: "GameData.db".to_string(), size_bytes: main_bytes.len(), sha256: main_digest.clone() });
+    vault_files.push(VaultFile {
+        name: "GameData.db".to_string(),
+        size_bytes: main_bytes.len(),
+        sha256: main_digest.clone(),
+        content_base64: BASE64.encode(&main_bytes),
+    });
+
+    let backup_bytes = capture_file(&adb, &serial, "GameData.db.bak")?;
+    let backup_digest = hash_hex(&backup_bytes);
+    file_infos.push(FileInfo { name: "GameData.db.bak".to_string(), size_bytes: backup_bytes.len(), sha256: backup_digest.clone() });
+    vault_files.push(VaultFile {
+        name: "GameData.db.bak".to_string(),
+        size_bytes: backup_bytes.len(),
+        sha256: backup_digest,
+        content_base64: BASE64.encode(&backup_bytes),
+    });
+
     if remote_file_exists(&adb, &serial, GAME_WAL_FILE)? {
-        let bytes = capture_file(&adb, &serial, GAME_WAL_FILE)?;
-        let digest = hash_hex(&bytes);
-        file_infos.push(FileInfo { name: GAME_WAL_FILE.to_string(), size_bytes: bytes.len(), sha256: digest.clone() });
+        // Verify the main file immediately before and after fetching its WAL.
+        // If it changed, reject the mixed capture instead of saving a torn pair.
+        let main_before_wal = capture_file(&adb, &serial, "GameData.db")?;
+        let before_digest = hash_hex(&main_before_wal);
+        if before_digest != main_digest {
+            return Err("Capture consistency check failed: GameData.db changed before WAL capture. Keep Gardenscapes closed and retry.".to_string());
+        }
+
+        let wal_bytes = capture_file(&adb, &serial, GAME_WAL_FILE)?;
+        let wal_digest = hash_hex(&wal_bytes);
+
+        let main_after_wal = capture_file(&adb, &serial, "GameData.db")?;
+        let after_digest = hash_hex(&main_after_wal);
+        if after_digest != before_digest {
+            return Err("Capture consistency check failed: GameData.db changed while GameData.db-wal was being captured. No snapshot was saved; keep Gardenscapes closed and retry.".to_string());
+        }
+
+        let process_after = run_adb_for_device(&adb, &serial, &["shell", "pidof", GAME_PACKAGE])?;
+        if !String::from_utf8_lossy(&process_after.stdout).trim().is_empty() {
+            return Err("Gardenscapes started during backup capture. No snapshot was saved; close the game and retry.".to_string());
+        }
+
+        file_infos.push(FileInfo { name: GAME_WAL_FILE.to_string(), size_bytes: wal_bytes.len(), sha256: wal_digest.clone() });
         vault_files.push(VaultFile {
             name: GAME_WAL_FILE.to_string(),
-            size_bytes: bytes.len(),
-            sha256: digest,
-            content_base64: BASE64.encode(&bytes),
+            size_bytes: wal_bytes.len(),
+            sha256: wal_digest,
+            content_base64: BASE64.encode(&wal_bytes),
         });
     }
 
