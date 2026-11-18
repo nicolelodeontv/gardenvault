@@ -847,13 +847,13 @@ mod tests {
         assert_eq!(diagnostics.size_mod_512, bytes.len() % 512);
         assert_eq!(diagnostics.size_mod_4096, bytes.len() % 4096);
         assert_eq!(diagnostics.tail_hex.len(), 64);
-        assert!(diagnostics.embedded_signatures.iter().any(|hit| hit.contains("0x10")));
-        assert!(diagnostics.embedded_signatures.iter().any(|hit| hit.contains("0x111F8")));
+        assert!(diagnostics.embedded_signatures.iter().any(|hit| hit.contains("0xC")));
+        assert!(diagnostics.embedded_signatures.iter().any(|hit| hit.contains("0x117F8")));
     }
 
     #[test]
     fn zstd_probe_decodes_one_frame_and_ignores_trailing_data() {
-        let original = b"SQLite format 3\\0GardenVault test payload";
+        let original = b"SQLite format 3\0GardenVault test payload";
         let compressed = zstd::stream::encode_all(Cursor::new(original), 1).expect("encode zstd test frame");
         let mut bytes = b"prefixPLXE".to_vec();
         let frame_offset = bytes.len();
@@ -873,13 +873,14 @@ mod tests {
     fn all_zstd_candidates_are_attempted_and_plxe_lengths_are_compared() {
         let first = zstd::stream::encode_all(Cursor::new(b"first decoded payload"), 1).expect("first frame");
         let second = zstd::stream::encode_all(Cursor::new(b"second decoded payload"), 1).expect("second frame");
-        let mut bytes = b"PLXE".to_vec();
-        bytes.extend_from_slice(&(first.len() as u32).to_le_bytes());
+        let mut bytes = b"PLXE\\0\\0\\0\\0".to_vec();
         let first_offset = bytes.len();
         bytes.extend_from_slice(&first);
         bytes.extend_from_slice(b"separator");
         let second_offset = bytes.len();
         bytes.extend_from_slice(&second);
+        let first_payload_length = (bytes.len() - first_offset) as u32;
+        bytes[4..8].copy_from_slice(&first_payload_length.to_le_bytes());
 
         let (_, header_words, skipped, probes) = inspect_bytes(&bytes);
         assert_eq!(find_signature_offsets(&bytes, ZSTD_MAGIC), vec![first_offset, second_offset]);
