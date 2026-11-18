@@ -2,20 +2,20 @@
 
 GardenVault is a local-first Windows desktop utility for reading Gardenscapes profile files from an authorized LDPlayer 14 instance and creating encrypted offline snapshots.
 
-## v1.0.0-rc.5 MVP
+## v1.0.0-rc.6 MVP
 
 - Detect connected LDPlayer emulators through ADB.
 - Verify the Gardenscapes package and root availability.
 - Read the observed `GameData.db` and `GameData.db.bak` files after the game process exits.
 - Quote the full `su -c` command and use raw `adb exec-out` transfer so the file path is not parsed as a root user ID and binary bytes avoid terminal conversion.
 - Encrypt both files in memory with Argon2id + AES-256-GCM before writing a single `.gvault` file to local app data.
-- Browse locally stored encrypted snapshots and export byte-identical encrypted copies through the Windows Save As dialog.
+- Browse locally stored encrypted snapshots and export byte-identical encrypted copies through the Windows Save As dialog.\n- Decrypt a selected snapshot only in memory after passphrase entry, verify each embedded file against its SHA-256 digest, and report conservative file-signature detection without writing or applying any game data.
 - Never write into the Gardenscapes game directory.
 - No save data is sent to a cloud service.
 
 ## Compatibility limit
 
-The supplied save files have not been identified as standard SQLite. The app currently reports file sizes and SHA-256 hashes; it does not decode or edit coins, items, or level fields. Backup export copies the encrypted container unchanged and does not restore it into the game. Editing and live Apply remain disabled pending a verified format adapter.
+The supplied save files have not been identified as standard SQLite. The app currently reports file sizes, SHA-256 hashes, and basic file signatures; it does not decode or edit coins, items, or level fields. Backup export copies the encrypted container unchanged and does not restore it into the game. Editing and live Apply remain disabled pending a verified format adapter.
 
 The RC5 capture-command fix addresses the reported LDPlayer error `Unknown id: /data/user/0/...`. It still needs a fresh capture test on the target LDPlayer installation to confirm that the assumed files exist at the configured path.
 
