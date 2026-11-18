@@ -1,28 +1,21 @@
 # Product roadmap
 
-## v1.0.0-rc.7 — Local binary diagnostics
-- [x] Authenticated inspection that decrypts the snapshot only in memory
-- [x] Validate captured file lengths and SHA-256 checksums
-- [x] Report entropy, printable-byte percentage, zero-byte percentage, and unique byte count
-- [x] Scan the first 64 KiB for common compression/container signatures, including PLXE and Zstandard
-- [x] Keep inspection read-only; do not extract or alter the original game files
-
-## v1.0.0-rc.7 — Local binary diagnostics
-- [x] Tauri 2 desktop shell and dark dashboard
-- [x] ADB device discovery for supported LDPlayer serials
-- [x] Read-only capture of the configured Gardenscapes files after the game process exits
-- [x] Argon2id + AES-256-GCM encrypted offline snapshots
-- [x] SHA-256 integrity checks before inspection
-- [x] Local-only authenticated snapshot inspection
-- [x] Conservative file signature and embedded magic scanning
-- [x] Shannon byte entropy, printable-byte ratio, zero-byte ratio, and unique-byte count
-- [x] Multi-line forensic report without writing any game data
+## v1.0.0-rc.8 — Read-only binary forensics
+- [x] Authenticated in-memory snapshot inspection and SHA-256 verification
+- [x] Scan the complete file for every occurrence of the known strong signatures
+- [x] Record all Zstandard candidate offsets and attempt bounded streaming decode at each (up to 32 per file)
+- [x] Check frame content-size metadata against the actual decoded output size
+- [x] Report exact compressed frame length and trailing bytes after each candidate frame
+- [x] Inspect decompressed output for file type, signatures, SHA-256, entropy, and byte statistics
+- [x] Parse PLXE-adjacent little-endian u32 fields and compare against file/payload lengths
+- [x] Report whole-file, first-256-byte, remainder, and tail entropy
+- [x] Report size modulo 16, 512, and 4096, plus the last 32 bytes in hex
+- [x] Keep all inspection read-only and in memory, with bounded decompression output
 
 ## Next milestones
-1. Use RC7 diagnostics to determine whether the captured file looks structured, compressed, or high-entropy.
-2. Add snapshot-to-snapshot differential analysis to compare a stable capture with a later capture, without modifying either source.
-3. If necessary, add an explicitly confirmed export of a decrypted copy for user-controlled offline tooling.
-4. Identify whether the local file contains playable progress or only a local cache; do not assume editing it changes server-side progress.
-5. Implement any parser only after the file structure and integrity rules are verified.
+1. Interpret the next RC8 report and determine whether any actual Zstandard frame validates.
+2. Capture a second snapshot after a small, ordinary in-game progress change and compare them byte-for-byte, including header and tail regions.
+3. Determine whether the local file is a cache, local checkpoint, or meaningful progress store; do not assume it is server-authoritative.
+4. Implement a parser only after the container and integrity rules are verified.
 
-A decoded save editor, live game Apply, cross-platform sync, cloud analytics, and 24/7 support are not part of this milestone.
+Currency/item/level editing, restore-to-game, live Apply, cross-platform sync, and cloud analytics remain disabled.
