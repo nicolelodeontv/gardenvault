@@ -1087,23 +1087,24 @@ fn inspect_vault(app: AppHandle, file_name: String, passphrase: String) -> Resul
         decoded_files.push((file.name, bytes));
     }
 
-    let wal_bytes = decoded_files.iter()
+    let wal_diagnostics = decoded_files.iter()
         .find(|(name, _)| name == GAME_WAL_FILE)
-        .map(|(_, bytes)| bytes.as_slice());
+        .map(|(_, bytes)| inspect_sqlite_wal(Some(bytes)))
+        .unwrap_or_else(|| inspect_sqlite_wal(None));
     let mut inspected = Vec::new();
     for (name, bytes) in decoded_files {
         let (mut diagnostics, header_words, decoded_size_matches, zstd_candidates_attempted, zstd_candidates_skipped, zstd_candidates_overlapping_skipped, mut zstd_probes) = inspect_bytes(&bytes);
         if name == "GameData.db" {
             if let Some(sqlite) = diagnostics.sqlite_database.as_mut() {
-                sqlite.wal = Some(inspect_sqlite_wal(wal_bytes));
-                sqlite.note.push_str(if wal_bytes.is_some() {
+                sqlite.wal = Some(wal_diagnostics.clone());
+                sqlite.note.push_str(if wal_diagnostics.present {
                     " A companion GameData.db-wal was captured and checked separately; its pages were not replayed."
                 } else {
                     " No companion GameData.db-wal file was present at capture time."
                 });
                 for probe in &mut zstd_probes {
                     if let Some(decoded_sqlite) = probe.decoded.as_mut().and_then(|decoded| decoded.sqlite_database.as_mut()) {
-                        decoded_sqlite.wal = Some(inspect_sqlite_wal(wal_bytes));
+                        decoded_sqlite.wal = Some(wal_diagnostics.clone());
                         decoded_sqlite.note.push_str(if wal_bytes.is_some() {
                             " A companion WAL was captured and checked separately; its pages were not replayed."
                         } else {
@@ -1122,6 +1123,7 @@ fn inspect_vault(app: AppHandle, file_name: String, passphrase: String) -> Resul
             zstd_candidates_attempted,
             zstd_candidates_skipped,
             zstd_candidates_overlapping_skipped,
+            zstd_skippable_frames: find_zstd_skippable_frames(&bytes),
             zstd_probes,
         });
     }
