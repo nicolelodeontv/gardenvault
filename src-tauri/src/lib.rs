@@ -873,7 +873,7 @@ mod tests {
     fn all_zstd_candidates_are_attempted_and_plxe_lengths_are_compared() {
         let first = zstd::stream::encode_all(Cursor::new(b"first decoded payload"), 1).expect("first frame");
         let second = zstd::stream::encode_all(Cursor::new(b"second decoded payload"), 1).expect("second frame");
-        let mut bytes = b"PLXE\\0\\0\\0\\0".to_vec();
+        let mut bytes = b"PLXE\0\0\0\0".to_vec();
         let first_offset = bytes.len();
         bytes.extend_from_slice(&first);
         bytes.extend_from_slice(b"separator");
