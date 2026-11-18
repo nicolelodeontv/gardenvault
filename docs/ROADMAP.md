@@ -18,7 +18,7 @@
 - [x] Add 256 deterministic randomized scanner/decoder wrapper cases
 - [x] Open SQLite images read-only in memory and run schema/quick-check queries
 - [x] Capture the fixed companion WAL file if present and inspect its header/frame layout without replay
-- [x] Keep all inspection read-only and in memory, with bounded decompression output
+- [x] Detect Zstandard skippable-frame magic separately without feeding it to the normal decoder\n- [x] Stream decompressed bytes through a fixed 32 KiB buffer and enforce a 40 MiB output + 16 MiB window + 8 MiB headroom budget\n- [x] Explicitly mark WAL frame inspection as unvalidated because checksums are not verified\n- [x] Check the main database SHA-256 before and after optional WAL capture and reject changed pairs\n- [x] Enable SQLite defensive/query-only modes, disable extension loading, turn off trusted_schema, and bound SQL inspection to 500 ms\n- [x] Skip SQLite quick_check when either read/write header version marks WAL mode\n- [x] Keep all inspection read-only and in memory, with bounded decompression output
 
 ## Next milestones
 1. Interpret the next RC8 report and determine whether any actual Zstandard frame validates.
