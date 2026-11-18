@@ -4,7 +4,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use super::{append_captured_file, hash_hex, run_adb_for_device, FileInfo, VaultFile, GAME_DATA_DIR, MAX_SAVE_BYTES};
+use super::{hash_hex, run_adb_for_device, GAME_DATA_DIR, MAX_SAVE_BYTES};
+
+#[cfg(test)]
+use super::{append_captured_file, append_optional_captured_file, FileInfo, VaultFile};
 
 #[derive(Debug)]
 struct DevicePullMetadata {
@@ -323,16 +326,23 @@ pub(super) fn capture_file_optional(
                 MAX_SAVE_BYTES / (1024 * 1024)
             ));
         }
-        if pulled_size != metadata.copy_size as u64 {
+        if metadata.source_size != metadata.copy_size
+            || !metadata.source_sha256.eq_ignore_ascii_case(&metadata.copy_sha256)
+        {
             return Err(format!(
-                "Could not read {file_name} completely: device copy reported {} bytes but ADB pull wrote {pulled_size}. No backup was saved.",
-                metadata.copy_size
+                "Device temporary-copy verification changed before pull for {file_name}. No backup was saved."
+            ));
+        }
+        if pulled_size != metadata.source_size as u64 {
+            return Err(format!(
+                "Could not read {file_name} completely: device source reported {} bytes but ADB pull wrote {pulled_size}. No backup was saved.",
+                metadata.source_size
             ));
         }
 
         let bytes = fs::read(&guard.host_file)
             .map_err(|error| format!("Could not read pulled host copy of {file_name}: {error}"))?;
-        verify_pulled_capture(file_name, &bytes, metadata.copy_size, &metadata.copy_sha256)
+        verify_pulled_capture(file_name, &bytes, metadata.source_size, &metadata.source_sha256)
             .map(Some)
     })();
 
@@ -406,10 +416,7 @@ mod tests {
 
         let mut files: Vec<FileInfo> = Vec::new();
         let mut vaults: Vec<VaultFile> = Vec::new();
-        append_captured_file("GameData.db-wal", b"".to_vec(), &mut files, &mut vaults);
-        // A missing optional file must not be appended by the capture caller.
-        files.clear();
-        vaults.clear();
+        append_optional_captured_file("GameData.db-wal", None, &mut files, &mut vaults);
         assert!(files.is_empty());
         assert!(vaults.is_empty());
     }
