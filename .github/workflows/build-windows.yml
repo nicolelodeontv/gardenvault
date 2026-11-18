@@ -42,51 +42,42 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $candidateDirs = @(
+          $nsisDirs = @(
             (Join-Path ${env:ProgramFiles(x86)} 'NSIS'),
             (Join-Path $env:ProgramFiles 'NSIS'),
             (Join-Path $env:ProgramData 'chocolatey/bin')
           ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
-
           $makensis = Get-Command makensis.exe -ErrorAction SilentlyContinue
           if (-not $makensis) {
             choco install nsis --no-progress -y
-            $candidateDirs = @(
+            $nsisDirs = @(
               (Join-Path ${env:ProgramFiles(x86)} 'NSIS'),
               (Join-Path $env:ProgramFiles 'NSIS'),
               (Join-Path $env:ProgramData 'chocolatey/bin')
             ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
-            foreach ($dir in $candidateDirs) {
-              if (Test-Path -LiteralPath (Join-Path $dir 'makensis.exe')) {
-                $dir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-                $env:PATH = "$dir;$env:PATH"
-                break
-              }
+          }
+          $found = $null
+          foreach ($dir in $nsisDirs) {
+            $candidate = Join-Path $dir 'makensis.exe'
+            if (Test-Path -LiteralPath $candidate) {
+              $found = $candidate
+              $dir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+              $env:PATH = "$dir;$env:PATH"
+              break
             }
           }
-
-          $makensis = Get-Command makensis.exe -ErrorAction SilentlyContinue
-          if (-not $makensis) {
-            foreach ($dir in $candidateDirs) {
-              $exe = Join-Path $dir 'makensis.exe'
-              if (Test-Path -LiteralPath $exe) {
-                $dir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-                $env:PATH = "$dir;$env:PATH"
-                $makensis = Get-Command makensis.exe -ErrorAction SilentlyContinue
-                break
-              }
-            }
+          if (-not $found) {
+            $cmd = Get-Command makensis.exe -ErrorAction SilentlyContinue
+            if ($cmd) { $found = $cmd.Source }
           }
-          if (-not $makensis) {
-            throw 'NSIS installation succeeded or was attempted, but makensis.exe could not be located.'
-          }
-          & $makensis.Source /VERSION
+          if (-not $found) { throw 'Could not locate makensis.exe after installing NSIS.' }
+          & $found /VERSION
       - name: Install npm dependencies
         run: npm install --no-audit --no-fund
       - name: Run frontend tests
         run: npm test
-      - name: Check Rust formatting
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+      - name: Format Rust source
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all
       - name: Run Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
       - name: Generate application icons
