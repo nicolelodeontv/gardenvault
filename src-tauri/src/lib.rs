@@ -788,13 +788,13 @@ fn probe_zstd_frame(bytes: &[u8], offset: usize, remaining_budget: u64) -> ZstdP
             };
         }
     };
-    if let Err(error) = decoder.window_log_max(24) {
+    if let Err(error) = decoder.window_log_max(MAX_ZSTD_WINDOW_BYTES.trailing_zeros()) {
         return ZstdProbe {
             offset, status: "limit-hit".to_string(), frame_content_size_bytes: declared_size,
             compressed_frame_size_bytes: Some(frame_size),
             trailing_bytes_after_frame: Some(payload.len() - frame_size),
             observed_output_bytes: None,
-            note: format!("The Zstandard decoder could not apply its 64 MiB window limit: {error}"),
+            note: format!("The Zstandard decoder could not apply its bounded 16 MiB window limit: {error}"),
             decoded: None,
         };
     }
