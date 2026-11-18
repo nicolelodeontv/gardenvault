@@ -865,7 +865,7 @@ fn text_likeness_weight(byte: u8) -> f64 {
         b' ' => 3.2,
         b'\n' | b'\r' | b'\t' => 1.1,
         b'e' | b't' | b'a' | b'o' | b'i' | b'n' => 2.9,
-        b'E' | b'T' | b'A' | b'O' | b'I' | b'N => 2.4,
+        b'E' | b'T' | b'A' | b'O' | b'I' | b'N' => 2.4,
         b's' | b'h' | b'r' | b'd' | b'l' | b'u'
         | b'S' | b'H' | b'R' | b'D' | b'L' | b'U' => 2.0,
         b'a'..=b'z' | b'A'..=b'Z' => 1.7,
