@@ -1,23 +1,21 @@
 # Product roadmap
 
-## v1.0.0-rc.5 — LDPlayer capture fix
+## v1.0.0-rc.7 — Local binary diagnostics
 - [x] Tauri 2 desktop shell and dark dashboard
-- [x] ADB device discovery for supported emulator serials
-- [x] Gardenscapes package and root checks
-- [x] Read-only capture of the two configured save files after the game process exits
-- [x] Argon2id + AES-256-GCM offline vault container
-- [x] SHA-256 integrity metadata
-- [x] Browse locally stored encrypted snapshots
-- [x] Export a selected `.gvault` file unchanged through a native Windows Save As dialog
-- [x] Quote the complete `su -c 'cat ...'` command to prevent the path being parsed as a user ID
-- [x] Use `adb exec-out` for raw binary output
-- [x] Add Rust regression coverage for both allowed capture filenames and rejected arbitrary paths
+- [x] ADB device discovery for supported LDPlayer serials
+- [x] Read-only capture of the configured Gardenscapes files after the game process exits
+- [x] Argon2id + AES-256-GCM encrypted offline snapshots
+- [x] SHA-256 integrity checks before inspection
+- [x] Local-only authenticated snapshot inspection
+- [x] Conservative file signature and embedded magic scanning
+- [x] Shannon byte entropy, printable-byte ratio, zero-byte ratio, and unique-byte count
+- [x] Multi-line forensic report without writing any game data
 
 ## Next milestones
-1. Verify the actual save-file locations on LDPlayer and inspect controlled before/after snapshots without modifying them.
-2. Add authenticated vault inspection and a separately confirmed restore workflow after compatibility tests.
-3. Implement a data reader only if the format is documented or otherwise legitimately accessible.
-4. Add opt-in monitoring for Gardenscapes process exit and duplicate-capture protection.
-5. Continue the no-root Android vault manager separately from rooted game-file capture.
+1. Use RC7 diagnostics to determine whether the captured file looks structured, compressed, or high-entropy.
+2. Add snapshot-to-snapshot differential analysis to compare a stable capture with a later capture, without modifying either source.
+3. If necessary, add an explicitly confirmed export of a decrypted copy for user-controlled offline tooling.
+4. Identify whether the local file contains playable progress or only a local cache; do not assume editing it changes server-side progress.
+5. Implement any parser only after the file structure and integrity rules are verified.
 
-A decoded save editor, live game Apply, cross-platform sync, cloud analytics, and 24/7 support are not part of this MVP.
+A decoded save editor, live game Apply, cross-platform sync, cloud analytics, and 24/7 support are not part of this milestone.
