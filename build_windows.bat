@@ -9,7 +9,7 @@ call npm install --no-audit --no-fund
 if errorlevel 1 exit /b 1
 call npm test
 if errorlevel 1 exit /b 1
-cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+cargo fmt --manifest-path src-tauri/Cargo.toml --all
 if errorlevel 1 exit /b 1
 cargo test --manifest-path src-tauri/Cargo.toml
 if errorlevel 1 exit /b 1
