@@ -601,7 +601,7 @@ mod tests {
         assert_eq!(detect_file_format(b"SQLite format 3\0rest"), "SQLite 3 database");
         assert_eq!(detect_file_format(b"PK\x03\x04archive"), "ZIP archive");
         assert_eq!(detect_file_format(b"not a known header"), "Unknown binary format");
-        assert_eq!(detect_file_format(b"PLXE\\x04\\x00\\x00\\x00"), "Playrix PLXE container (payload not decoded)");
+        assert_eq!(detect_file_format(b"PLXE\x04\x00\x00\x00"), "Playrix PLXE container (payload not decoded)");
         assert!(find_embedded_signatures(b"prefixPLXEpayload").iter().any(|s| s.contains("PLXE")));
         assert_eq!(byte_entropy(&[0_u8; 32]), 0.0);
         let all_values = (0_u8..=255).collect::<Vec<_>>();
