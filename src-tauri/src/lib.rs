@@ -487,7 +487,7 @@ fn inspect_sqlite_wal(wal: Option<&[u8]>) -> SqliteWalDiagnostics {
 }
 
 fn inspect_sqlite_readonly(bytes: &[u8]) -> Option<SqliteDiagnostics> {
-    if !bytes.starts_with(b"SQLite format 3\\0") {
+    if !bytes.starts_with(b"SQLite format 3\0") {
         return None;
     }
 
@@ -990,7 +990,7 @@ fn inspect_vault(app: AppHandle, file_name: String, passphrase: String) -> Resul
     if snapshot.product != "GardenVault" || snapshot.package != GAME_PACKAGE || snapshot.schema_version != 1 {
         return Err("Snapshot metadata is not a supported Gardenscapes capture.".to_string());
     }
-    let mut inspected = Vec::new();
+    let mut decoded_files = Vec::new();
     for file in snapshot.files {
         if !matches!(file.name.as_str(), "GameData.db" | "GameData.db.bak" | "GameData.db-wal") {
             return Err("Snapshot contains an unexpected file entry.".to_string());
@@ -1000,9 +1000,27 @@ fn inspect_vault(app: AppHandle, file_name: String, passphrase: String) -> Resul
         if bytes.len() != file.size_bytes || hash_hex(&bytes) != file.sha256 {
             return Err(format!("Integrity check failed for {}.", file.name));
         }
-        let (diagnostics, header_words, decoded_size_matches, zstd_candidates_attempted, zstd_candidates_skipped, zstd_candidates_overlapping_skipped, zstd_probes) = inspect_bytes(&bytes);
+        decoded_files.push((file.name, bytes));
+    }
+
+    let wal_bytes = decoded_files.iter()
+        .find(|(name, _)| name == GAME_WAL_FILE)
+        .map(|(_, bytes)| bytes.as_slice());
+    let mut inspected = Vec::new();
+    for (name, bytes) in decoded_files {
+        let (mut diagnostics, header_words, decoded_size_matches, zstd_candidates_attempted, zstd_candidates_skipped, zstd_candidates_overlapping_skipped, zstd_probes) = inspect_bytes(&bytes);
+        if name == "GameData.db" {
+            if let Some(sqlite) = diagnostics.sqlite_database.as_mut() {
+                sqlite.wal = Some(inspect_sqlite_wal(wal_bytes));
+                sqlite.note.push_str(if wal_bytes.is_some() {
+                    " A companion GameData.db-wal was captured and checked separately; its pages were not replayed."
+                } else {
+                    " No companion GameData.db-wal file was present at capture time."
+                });
+            }
+        }
         inspected.push(InspectedFile {
-            name: file.name,
+            name,
             diagnostics,
             plxe_header_words: header_words,
             plxe_header_decoded_size_matches: decoded_size_matches,
