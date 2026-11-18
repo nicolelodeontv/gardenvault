@@ -11,8 +11,8 @@
 - [x] Report whole-file, first-256-byte, remainder, and tail entropy
 - [x] Report size modulo 16, 512, and 4096, plus the last 32 bytes in hex
 - [x] Compare PLXE u32 fields against both compressed payload lengths and decoded frame output sizes
-- [x] Share a 64 MiB decompression budget across all candidate frames in each file
-- [x] Cap Zstandard back-reference windows at 64 MiB
+- [x] Share a 20 MiB retained-output budget across all candidate frames in each file
+- [x] Cap Zstandard back-reference windows at 16 MiB
 - [x] Distinguish false magic, incomplete frames, decode failures, size mismatches, and resource-limit hits
 - [x] Skip nested/overlapping frame signatures without skipping the next frame at a true frame boundary
 - [x] Add 256 deterministic randomized scanner/decoder wrapper cases
@@ -24,7 +24,7 @@
 - [x] Check the main database SHA-256 before and after optional WAL capture and reject changed pairs
 - [x] Enable SQLite defensive/query-only modes, disable extension loading, turn off trusted_schema, and bound SQL inspection to 500 ms
 - [x] Skip SQLite quick_check when either read/write header version marks WAL mode
-- [x] Keep all inspection read-only and in memory, with bounded decompression output and a 500 ms SQLite SQL-query budget
+- [x] Keep all inspection read-only and in memory, with bounded decompression output and a 500 ms SQLite SQL-query budget and a 500 ms SQLite SQL-query budget
 
 ## Next milestones
 1. Interpret the next RC8 report and determine whether any actual Zstandard frame validates.
