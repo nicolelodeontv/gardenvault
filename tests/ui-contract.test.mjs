@@ -53,3 +53,11 @@ test("desktop theme defaults to dark mode", () => {
   assert.match(html, /name="color-scheme" content="dark"/);
   assert.match(css, /color-scheme:dark/);
 });
+
+test("capture UI distinguishes device attestation from vault-only integrity and labels absent optional files", () => {
+  assert.match(js, /device-stat-sha256-v1/);
+  assert.match(js, /device stat size and SHA-256 matched the received bytes/);
+  assert.match(js, /Optional files not present/);
+  assert.match(js, /Device SHA-256 matched/);
+  assert.doesNotMatch(js, /SHA-256 verified/);
+});
