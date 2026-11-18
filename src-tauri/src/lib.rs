@@ -925,6 +925,25 @@ mod tests {
     }
 
     #[test]
+    fn plxe_word_can_match_the_decompressed_zstd_size() {
+        let original = b"decoded payload with a known length";
+        let compressed = zstd::stream::encode_all(Cursor::new(original), 1).expect("encode frame");
+        let mut bytes = b"PLXE\\0\\0\\0\\0\\0\\0\\0\\0".to_vec();
+        let frame_offset = bytes.len();
+        bytes.extend_from_slice(&compressed);
+        bytes[4..8].copy_from_slice(&(compressed.len() as u32).to_le_bytes());
+        bytes[8..12].copy_from_slice(&(original.len() as u32).to_le_bytes());
+
+        let (_, header_words, decoded_matches, skipped, probes) = inspect_bytes(&bytes);
+        assert_eq!(skipped, 0);
+        assert_eq!(probes.len(), 1);
+        assert_eq!(probes[0].offset, frame_offset);
+        assert_eq!(probes[0].status, "decoded-cleanly");
+        assert!(header_words.iter().any(|word| word.contains("matches bytes from Zstandard candidate to EOF")));
+        assert!(decoded_matches.iter().any(|word| word.contains("+0x08 equals decoded size")));
+    }
+
+    #[test]
     fn encrypted_vault_round_trips_and_authenticates() {
         let original = b"GardenVault encrypted snapshot test";
         let encrypted = encrypt_vault("correct horse battery staple", original).expect("encrypt");
