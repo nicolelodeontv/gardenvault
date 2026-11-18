@@ -437,7 +437,8 @@ impl SqliteDiagnostics {
 fn inspect_sqlite_wal(wal: Option<&[u8]>) -> SqliteWalDiagnostics {
     let Some(bytes) = wal else {
         return SqliteWalDiagnostics {
-            present: false, size_bytes: 0, status: "not-present".to_string(),
+            present: false, size_bytes: 0, status: "unvalidated-not-present".to_string(),
+            checksum_validation: "unvalidated".to_string(),
             magic_hex: None, page_size_bytes: None, complete_frames: 0,
             salt_matching_frames: 0, trailing_bytes: 0,
             note: "No companion GameData.db-wal file was captured.".to_string(),
@@ -486,22 +487,23 @@ fn inspect_sqlite_wal(wal: Option<&[u8]>) -> SqliteWalDiagnostics {
         }
     }
     let status = if complete_frames == 0 {
-        "valid-header-no-complete-frames"
+        "unvalidated-header-no-complete-frames"
     } else if salt_matching_frames == complete_frames && trailing_bytes == 0 {
-        "valid-header-frames"
+        "unvalidated-header-and-frame-layout"
     } else {
-        "frames-or-tail-need-review"
+        "unvalidated-frames-or-tail-need-review"
     };
     SqliteWalDiagnostics {
         present: true,
         size_bytes: bytes.len(),
         status: status.to_string(),
+        checksum_validation: "unvalidated".to_string(),
         magic_hex,
         page_size_bytes: Some(page_size),
         complete_frames,
         salt_matching_frames,
         trailing_bytes,
-        note: "WAL header, frame boundaries, and frame salts were checked. Frame checksums were not verified and WAL pages were not replayed.".to_string(),
+        note: "UNVALIDATED: WAL header, frame boundaries, and frame salts were inspected only. Frame checksums were not verified and WAL pages were not replayed.".to_string(),
     }
 }
 
