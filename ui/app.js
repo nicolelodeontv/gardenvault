@@ -100,6 +100,17 @@ function renderVaults(vaults) {
           const embedded = (file.embeddedSignatures || []).join("\n  ");
           const headerWords = (file.plxeHeaderWords || []).join("\n  ") || "No PLXE header fields found";
           const decodedSizeMatches = (file.plxeHeaderDecodedSizeMatches || []).join("\n  ") || "No PLXE words matched a successfully decoded output size";
+          const describeSqlite = database => {
+            if (!database) return "No SQLite header detected";
+            const wal = database.wal;
+            return `SQLite: ${database.status} · opened read-only: ${database.openedReadOnly}
+SQLite version: ${database.sqliteVersion || "not available"} · quick_check: ${database.quickCheck || "not available"}
+Schema objects: ${(database.schemaObjects || []).join(", ") || "none listed"}
+WAL: ${wal ? wal.status : "not checked"} · present: ${wal ? wal.present : "unknown"} · size: ${wal ? formatBytes(wal.sizeBytes) : "unknown"}
+WAL page size: ${wal?.pageSizeBytes ?? "unknown"} · complete frames: ${wal?.completeFrames ?? "unknown"} · salt matches: ${wal?.saltMatchingFrames ?? "unknown"} · trailing bytes: ${wal?.trailingBytes ?? "unknown"}
+${database.note || ""} ${wal?.note || ""}`;
+          };
+          const sqlite = describeSqlite(file.sqliteDatabase);
           const zstd = (file.zstdProbes || []).map(probe => {
             const frameSize = probe.compressedFrameSizeBytes == null ? "unknown" : formatBytes(probe.compressedFrameSizeBytes);
             const declared = probe.frameContentSizeBytes == null ? "not declared" : formatBytes(probe.frameContentSizeBytes);
@@ -110,7 +121,7 @@ function renderVaults(vaults) {
 Decoded SHA-256: ${probe.decoded.sha256}
 Decoded header (32 bytes): ${probe.decoded.signatureHex}
 Decoded entropy: whole ${Number(probe.decoded.entropyBitsPerByte).toFixed(3)} · first 256 ${Number(probe.decoded.header256EntropyBitsPerByte).toFixed(3)} · remainder ${Number(probe.decoded.bodyEntropyAfter256BitsPerByte).toFixed(3)}
-Decoded signatures: ${(probe.decoded.embeddedSignatures || []).join(", ")}`
+Decoded signatures: ${(probe.decoded.embeddedSignatures || []).join(", ")}\n${describeSqlite(probe.decoded.sqliteDatabase)}`
               : "";
             return `Zstandard @ 0x${Number(probe.offset).toString(16).toUpperCase()}: ${probe.status}
 Frame size: ${frameSize} · declared output: ${declared} · observed output: ${observed} · trailing bytes: ${trailing}
@@ -132,7 +143,7 @@ PLXE words matching decoded sizes:
   ${decodedSizeMatches}
 Zstandard candidates: ${file.zstdCandidatesAttempted} attempted / ${file.zstdCandidatesTotal} signatures · ${file.zstdCandidatesSkipped} skipped by 32-attempt cap · ${file.zstdCandidatesOverlappingSkipped} nested/overlapping signatures skipped
 ${zstd}`;
-        }).join("\n\n");        status.textContent = `${details}${report.identicalFiles ? " · Both captured files are identical." : ""}`;
+        }).join("\n\n");        status.textContent = `${details}${report.identicalFiles ? " · All captured files are byte-for-byte identical." : ""}`;
         status.className = "vault-row-status success";
       } catch (error) { status.textContent = String(error); status.className = "vault-row-status error"; }
       finally { button.disabled = false; if (inspectPassphraseInput) inspectPassphraseInput.value = ""; }
