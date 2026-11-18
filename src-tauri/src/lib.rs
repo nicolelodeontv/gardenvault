@@ -5,13 +5,16 @@ use chrono::Utc;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{fs::{self, File, OpenOptions}, io::{Read, Write}, path::{Path, PathBuf}, process::{Command, Output}, time::UNIX_EPOCH};
+use std::{fs::{self, File, OpenOptions}, io::{Cursor, Read, Write}, path::{Path, PathBuf}, process::{Command, Output}, time::UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 
 const GAME_PACKAGE: &str = "com.playrix.gardenscapes";
 const GAME_DATA_DIR: &str = "/data/user/0/com.playrix.gardenscapes/Documents";
 const MAX_SAVE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_VAULT_BYTES: u64 = (MAX_SAVE_BYTES as u64) * 3 + 1024 * 1024;
+const MAX_DECOMPRESSED_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_ZSTD_PROBES: usize = 32;
+const ZSTD_MAGIC: &[u8; 4] = b"\\x28\\xb5\\x2f\\xfd";
 const VAULT_MAGIC: &[u8; 7] = b"GVLT001";
 
 #[derive(Debug, Serialize, Clone)]
@@ -159,18 +162,49 @@ fn decrypt_vault_for_test(passphrase: &str, input: &[u8]) -> Result<Vec<u8>, Str
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct InspectedFile {
-    name: String,
+struct ByteDiagnostics {
     size_bytes: usize,
     sha256: String,
     detected_format: String,
     signature_hex: String,
     entropy_bits_per_byte: f64,
     entropy_assessment: String,
+    header_256_entropy_bits_per_byte: f64,
+    body_entropy_after_256_bits_per_byte: f64,
+    tail_256_entropy_bits_per_byte: f64,
     printable_ascii_percent: f64,
     zero_byte_percent: f64,
     unique_byte_values: usize,
+    size_mod_16: usize,
+    size_mod_512: usize,
+    size_mod_4096: usize,
+    tail_hex: String,
     embedded_signatures: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ZstdProbe {
+    offset: usize,
+    status: String,
+    frame_content_size_bytes: Option<u64>,
+    compressed_frame_size_bytes: Option<usize>,
+    trailing_bytes_after_frame: Option<usize>,
+    note: String,
+    decoded: Option<ByteDiagnostics>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InspectedFile {
+    name: String,
+    #[serde(flatten)]
+    diagnostics: ByteDiagnostics,
+    plxe_header_words: Vec<String>,
+    zstd_candidates_total: usize,
+    zstd_candidates_attempted: usize,
+    zstd_candidates_skipped: usize,
+    zstd_probes: Vec<ZstdProbe>,
 }
 
 #[derive(Debug, Serialize)]
@@ -231,29 +265,222 @@ fn entropy_assessment(entropy: f64) -> String {
     }
 }
 
+fn find_signature_offsets(bytes: &[u8], signature: &[u8]) -> Vec<usize> {
+    if signature.is_empty() || bytes.len() < signature.len() {
+        return Vec::new();
+    }
+    bytes.windows(signature.len())
+        .enumerate()
+        .filter_map(|(offset, window)| (window == signature).then_some(offset))
+        .collect()
+}
+
 fn find_embedded_signatures(bytes: &[u8]) -> Vec<String> {
-    const SCAN_LIMIT: usize = 64 * 1024;
-    let sample = &bytes[..bytes.len().min(SCAN_LIMIT)];
-    let signatures: [(&str, &[u8]); 10] = [
-        ("SQLite", b"SQLite format 3\0"),
+    // Scan the complete captured file (up to the existing 64 MiB capture cap).
+    // Only signatures of at least three bytes are listed; two-byte zlib/gzip
+    // prefixes are too collision-prone for useful embedded-hit reporting.
+    const SIGNATURES: [(&str, &[u8]); 8] = [
+        ("SQLite", b"SQLite format 3\\0"),
         ("Playrix PLXE wrapper", b"PLXE"),
-        ("ZIP", b"PK\x03\x04"),
-        ("GZIP", b"\x1f\x8b"),
-        ("Zstandard", b"\x28\xb5\x2f\xfd"),
-        ("LZ4 frame", b"\x04\x22\x4d\x18"),
-        ("PNG", b"\x89PNG\r\n\x1a\n"),
-        ("JPEG", b"\xff\xd8\xff"),
-        ("zlib candidate", b"\x78\x9c"),
-        ("zlib candidate", b"\x78\xda"),
+        ("ZIP", b"PK\\x03\\x04"),
+        ("Zstandard", ZSTD_MAGIC),
+        ("LZ4 frame", b"\\x04\\x22\\x4d\\x18"),
+        ("PNG", b"\\x89PNG\\r\\n\\x1a\\n"),
+        ("JPEG", b"\\xff\\xd8\\xff"),
+        ("UnityFS", b"UnityFS"),
     ];
     let mut found = Vec::new();
-    for (label, signature) in signatures {
-        if let Some(offset) = sample.windows(signature.len()).position(|window| window == signature) {
+    for (label, signature) in SIGNATURES {
+        for offset in find_signature_offsets(bytes, signature) {
             found.push(format!("{label} signature at offset 0x{offset:X}"));
         }
     }
-    if found.is_empty() { found.push("No known signatures found in first 64 KiB".to_string()); }
+    if found.is_empty() {
+        found.push("No known signatures found in the complete file".to_string());
+    }
     found
+}
+
+fn plxe_header_words(bytes: &[u8], plxe_offsets: &[usize], zstd_offsets: &[usize]) -> Vec<String> {
+    let mut words = Vec::new();
+    for &plxe_offset in plxe_offsets.iter().take(32) {
+        let Some(header_start) = plxe_offset.checked_add(4) else { continue };
+        let header_end = bytes.len().min(plxe_offset.saturating_add(36));
+        let mut field_offset = header_start;
+        while field_offset.saturating_add(4) <= header_end {
+            let value = u32::from_le_bytes([
+                bytes[field_offset],
+                bytes[field_offset + 1],
+                bytes[field_offset + 2],
+                bytes[field_offset + 3],
+            ]);
+            let remaining_after_field = bytes.len().saturating_sub(field_offset + 4);
+            let mut matches = Vec::new();
+            if value as usize == bytes.len() { matches.push("matches total file size"); }
+            if value as usize == remaining_after_field { matches.push("matches bytes after field"); }
+            for &zstd_offset in zstd_offsets.iter().filter(|offset| **offset >= header_start).take(8) {
+                if value as usize == bytes.len().saturating_sub(zstd_offset) {
+                    matches.push("matches bytes from Zstandard candidate to EOF");
+                    break;
+                }
+            }
+            let match_text = if matches.is_empty() { String::new() } else { format!(" ({})", matches.join(", ")) };
+            words.push(format!(
+                "PLXE@0x{plxe_offset:X} +0x{:02X}: u32le={} (0x{value:08X}){match_text}",
+                field_offset - plxe_offset,
+                value
+            ));
+            field_offset += 4;
+        }
+    }
+    words
+}
+
+fn byte_diagnostics(bytes: &[u8]) -> ByteDiagnostics {
+    let header_len = bytes.len().min(256);
+    let tail_start = bytes.len().saturating_sub(256);
+    let tail_hex_start = bytes.len().saturating_sub(32);
+    let entropy = byte_entropy(bytes);
+    ByteDiagnostics {
+        size_bytes: bytes.len(),
+        sha256: hash_hex(bytes),
+        detected_format: detect_file_format(bytes),
+        signature_hex: hex::encode(bytes.iter().take(32).copied().collect::<Vec<_>>()),
+        entropy_bits_per_byte: entropy,
+        entropy_assessment: entropy_assessment(entropy),
+        header_256_entropy_bits_per_byte: byte_entropy(&bytes[..header_len]),
+        body_entropy_after_256_bits_per_byte: byte_entropy(&bytes[header_len..]),
+        tail_256_entropy_bits_per_byte: byte_entropy(&bytes[tail_start..]),
+        printable_ascii_percent: byte_percent(bytes, |b| (0x20..=0x7e).contains(&b)),
+        zero_byte_percent: byte_percent(bytes, |b| b == 0),
+        unique_byte_values: unique_byte_count(bytes),
+        size_mod_16: bytes.len() % 16,
+        size_mod_512: bytes.len() % 512,
+        size_mod_4096: bytes.len() % 4096,
+        tail_hex: hex::encode(&bytes[tail_hex_start..]),
+        embedded_signatures: find_embedded_signatures(bytes),
+    }
+}
+
+fn probe_zstd_frame(bytes: &[u8], offset: usize) -> ZstdProbe {
+    let Some(payload) = bytes.get(offset..) else {
+        return ZstdProbe {
+            offset,
+            status: "invalid-offset".to_string(),
+            frame_content_size_bytes: None,
+            compressed_frame_size_bytes: None,
+            trailing_bytes_after_frame: None,
+            note: "Candidate offset is outside the file.".to_string(),
+            decoded: None,
+        };
+    };
+
+    let declared_size = zstd_safe::get_frame_content_size(payload).ok().flatten();
+    let frame_size = zstd_safe::find_frame_compressed_size(payload).ok();
+
+    let Some(frame_size) = frame_size else {
+        return ZstdProbe {
+            offset,
+            status: "invalid-frame".to_string(),
+            frame_content_size_bytes: declared_size,
+            compressed_frame_size_bytes: None,
+            trailing_bytes_after_frame: None,
+            note: "The Zstandard decoder could not validate a complete frame at this offset.".to_string(),
+            decoded: None,
+        };
+    };
+
+    if frame_size == 0 || frame_size > payload.len() {
+        return ZstdProbe {
+            offset,
+            status: "invalid-frame-size".to_string(),
+            frame_content_size_bytes: declared_size,
+            compressed_frame_size_bytes: Some(frame_size),
+            trailing_bytes_after_frame: None,
+            note: "The frame-size API returned an invalid length.".to_string(),
+            decoded: None,
+        };
+    }
+
+    if declared_size.is_some_and(|size| size > MAX_DECOMPRESSED_BYTES) {
+        return ZstdProbe {
+            offset,
+            status: "skipped-size-limit".to_string(),
+            frame_content_size_bytes: declared_size,
+            compressed_frame_size_bytes: Some(frame_size),
+            trailing_bytes_after_frame: Some(payload.len() - frame_size),
+            note: format!("Declared output exceeds the {} MiB inspection cap.", MAX_DECOMPRESSED_BYTES / (1024 * 1024)),
+            decoded: None,
+        };
+    }
+
+    let frame = &payload[..frame_size];
+    let decoder = match zstd::stream::read::Decoder::new(Cursor::new(frame)) {
+        Ok(decoder) => decoder.single_frame(),
+        Err(error) => {
+            return ZstdProbe {
+                offset,
+                status: "decoder-init-failed".to_string(),
+                frame_content_size_bytes: declared_size,
+                compressed_frame_size_bytes: Some(frame_size),
+                trailing_bytes_after_frame: Some(payload.len() - frame_size),
+                note: error.to_string(),
+                decoded: None,
+            };
+        }
+    };
+
+    let mut output = Vec::new();
+    let mut limited = decoder.take(MAX_DECOMPRESSED_BYTES + 1);
+    match limited.read_to_end(&mut output) {
+        Ok(_) if output.len() as u64 > MAX_DECOMPRESSED_BYTES => ZstdProbe {
+            offset,
+            status: "output-limit-exceeded".to_string(),
+            frame_content_size_bytes: declared_size,
+            compressed_frame_size_bytes: Some(frame_size),
+            trailing_bytes_after_frame: Some(payload.len() - frame_size),
+            note: format!("Decoded output exceeded the {} MiB inspection cap.", MAX_DECOMPRESSED_BYTES / (1024 * 1024)),
+            decoded: None,
+        },
+        Ok(_) => {
+            let decoded_size = output.len() as u64;
+            let size_matches = declared_size.map(|size| size == decoded_size);
+            let note = match size_matches {
+                Some(true) => "Frame decoded cleanly; declared content size matches output.".to_string(),
+                Some(false) => "Frame decoded, but declared content size does not match output.".to_string(),
+                None => "Frame decoded cleanly; frame did not declare its content size.".to_string(),
+            };
+            ZstdProbe {
+                offset,
+                status: "decoded-cleanly".to_string(),
+                frame_content_size_bytes: declared_size,
+                compressed_frame_size_bytes: Some(frame_size),
+                trailing_bytes_after_frame: Some(payload.len() - frame_size),
+                note,
+                decoded: Some(byte_diagnostics(&output)),
+            }
+        }
+        Err(error) => ZstdProbe {
+            offset,
+            status: "decode-failed".to_string(),
+            frame_content_size_bytes: declared_size,
+            compressed_frame_size_bytes: Some(frame_size),
+            trailing_bytes_after_frame: Some(payload.len() - frame_size),
+            note: format!("Zstandard frame validation/decompression failed: {error}"),
+            decoded: None,
+        },
+    }
+}
+
+fn inspect_bytes(bytes: &[u8]) -> (ByteDiagnostics, Vec<String>, usize, Vec<ZstdProbe>) {
+    let plxe_offsets = find_signature_offsets(bytes, b"PLXE");
+    let zstd_offsets = find_signature_offsets(bytes, ZSTD_MAGIC);
+    let header_words = plxe_header_words(bytes, &plxe_offsets, &zstd_offsets);
+    let attempted = zstd_offsets.len().min(MAX_ZSTD_PROBES);
+    let probes = zstd_offsets.iter().take(attempted)
+        .map(|offset| probe_zstd_frame(bytes, *offset))
+        .collect();
+    (byte_diagnostics(bytes), header_words, zstd_offsets.len() - attempted, probes)
 }
 
 fn detect_file_format(bytes: &[u8]) -> String {
@@ -267,6 +494,7 @@ fn detect_file_format(bytes: &[u8]) -> String {
     }
     if trimmed.starts_with(b"<?xml") || trimmed.starts_with(b"<") { return "XML-like text".to_string(); }
     if bytes.starts_with(b"UnityFS") { return "UnityFS asset bundle".to_string(); }
+    if bytes.starts_with(ZSTD_MAGIC) { return "Zstandard frame".to_string(); }
     if bytes.starts_with(b"PLXE") { return "Playrix PLXE container (payload not decoded)".to_string(); }
     if bytes.starts_with(b"ENC") { return "Unknown binary (ENC prefix)".to_string(); }
     "Unknown binary format".to_string()
@@ -451,20 +679,15 @@ fn inspect_vault(app: AppHandle, file_name: String, passphrase: String) -> Resul
         if bytes.len() != file.size_bytes || hash_hex(&bytes) != file.sha256 {
             return Err(format!("Integrity check failed for {}.", file.name));
         }
-        let signature_hex = hex::encode(bytes.iter().take(32).copied().collect::<Vec<_>>());
-        let entropy = byte_entropy(&bytes);
+        let (diagnostics, header_words, zstd_candidates_skipped, zstd_probes) = inspect_bytes(&bytes);
         inspected.push(InspectedFile {
             name: file.name,
-            size_bytes: bytes.len(),
-            sha256: file.sha256,
-            detected_format: detect_file_format(&bytes),
-            signature_hex,
-            entropy_bits_per_byte: entropy,
-            entropy_assessment: entropy_assessment(entropy),
-            printable_ascii_percent: byte_percent(&bytes, |b| (0x20..=0x7e).contains(&b)),
-            zero_byte_percent: byte_percent(&bytes, |b| b == 0),
-            unique_byte_values: unique_byte_count(&bytes),
-            embedded_signatures: find_embedded_signatures(&bytes),
+            diagnostics,
+            plxe_header_words: header_words,
+            zstd_candidates_total: find_signature_offsets(&bytes, ZSTD_MAGIC).len(),
+            zstd_candidates_attempted: zstd_probes.len(),
+            zstd_candidates_skipped,
+            zstd_probes,
         });
     }
     if inspected.is_empty() {
