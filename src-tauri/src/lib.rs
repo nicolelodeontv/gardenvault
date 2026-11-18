@@ -190,6 +190,7 @@ struct ZstdProbe {
     frame_content_size_bytes: Option<u64>,
     compressed_frame_size_bytes: Option<usize>,
     trailing_bytes_after_frame: Option<usize>,
+    observed_output_bytes: Option<u64>,
     note: String,
     decoded: Option<ByteDiagnostics>,
 }
@@ -205,6 +206,7 @@ struct InspectedFile {
     zstd_candidates_total: usize,
     zstd_candidates_attempted: usize,
     zstd_candidates_skipped: usize,
+    zstd_candidates_overlapping_skipped: usize,
     zstd_probes: Vec<ZstdProbe>,
 }
 
@@ -403,67 +405,75 @@ fn byte_diagnostics(bytes: &[u8]) -> ByteDiagnostics {
     }
 }
 
+fn zstd_frame_size_error_status(error_code: usize) -> (&'static str, String) {
+    let message = zstd_safe::get_error_name(error_code);
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("src size is incorrect") || lower.contains("source size is incorrect") {
+        ("incomplete", format!("Zstandard signature is present, but the frame is truncated or incomplete: {message}"))
+    } else {
+        ("signature-only", format!("Zstandard magic is present, but the bytes do not form a valid frame: {message}"))
+    }
+}
+
+fn is_zstd_limit_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("too much memory")
+        || lower.contains("window size")
+        || lower.contains("window is too large")
+        || lower.contains("memory limit")
+        || lower.contains("maximum window")
+}
+
 fn probe_zstd_frame(bytes: &[u8], offset: usize, remaining_budget: u64) -> ZstdProbe {
     let Some(payload) = bytes.get(offset..) else {
         return ZstdProbe {
-            offset,
-            status: "invalid-offset".to_string(),
-            frame_content_size_bytes: None,
-            compressed_frame_size_bytes: None,
-            trailing_bytes_after_frame: None,
-            note: "Candidate offset is outside the file.".to_string(),
-            decoded: None,
+            offset, status: "signature-only".to_string(), frame_content_size_bytes: None,
+            compressed_frame_size_bytes: None, trailing_bytes_after_frame: None,
+            observed_output_bytes: None, note: "Candidate offset is outside the file.".to_string(), decoded: None,
         };
     };
 
     if remaining_budget == 0 {
         return ZstdProbe {
-            offset,
-            status: "skipped-budget-exhausted".to_string(),
-            frame_content_size_bytes: None,
-            compressed_frame_size_bytes: None,
-            trailing_bytes_after_frame: None,
-            note: "The per-file decompression budget has been used.".to_string(),
+            offset, status: "limit-hit".to_string(), frame_content_size_bytes: None,
+            compressed_frame_size_bytes: None, trailing_bytes_after_frame: None,
+            observed_output_bytes: None,
+            note: "The cumulative per-file decompression budget has been exhausted.".to_string(),
             decoded: None,
         };
     }
 
     let output_limit = MAX_DECOMPRESSED_BYTES.min(remaining_budget);
     let declared_size = zstd_safe::get_frame_content_size(payload).ok().flatten();
-    let frame_size = zstd_safe::find_frame_compressed_size(payload).ok();
-
-    let Some(frame_size) = frame_size else {
-        return ZstdProbe {
-            offset,
-            status: "invalid-frame".to_string(),
-            frame_content_size_bytes: declared_size,
-            compressed_frame_size_bytes: None,
-            trailing_bytes_after_frame: None,
-            note: "The Zstandard decoder could not validate a complete frame at this offset.".to_string(),
-            decoded: None,
-        };
+    let frame_size = match zstd_safe::find_frame_compressed_size(payload) {
+        Ok(size) => size,
+        Err(error_code) => {
+            let (status, note) = zstd_frame_size_error_status(error_code);
+            return ZstdProbe {
+                offset, status: status.to_string(), frame_content_size_bytes: declared_size,
+                compressed_frame_size_bytes: None, trailing_bytes_after_frame: None,
+                observed_output_bytes: None, note, decoded: None,
+            };
+        }
     };
 
     if frame_size == 0 || frame_size > payload.len() {
         return ZstdProbe {
-            offset,
-            status: "invalid-frame-size".to_string(),
-            frame_content_size_bytes: declared_size,
-            compressed_frame_size_bytes: Some(frame_size),
-            trailing_bytes_after_frame: None,
-            note: "The frame-size API returned an invalid length.".to_string(),
+            offset, status: "signature-only".to_string(), frame_content_size_bytes: declared_size,
+            compressed_frame_size_bytes: None, trailing_bytes_after_frame: None,
+            observed_output_bytes: None,
+            note: "Zstandard magic was found, but the reported frame boundary is invalid.".to_string(),
             decoded: None,
         };
     }
 
     if declared_size.is_some_and(|size| size > output_limit) {
         return ZstdProbe {
-            offset,
-            status: "skipped-size-limit".to_string(),
-            frame_content_size_bytes: declared_size,
+            offset, status: "limit-hit".to_string(), frame_content_size_bytes: declared_size,
             compressed_frame_size_bytes: Some(frame_size),
             trailing_bytes_after_frame: Some(payload.len() - frame_size),
-            note: format!("Declared output exceeds the remaining {} MiB per-file inspection budget.", output_limit / (1024 * 1024)),
+            observed_output_bytes: None,
+            note: format!("Declared output exceeds the remaining {} MiB per-file output budget.", output_limit / (1024 * 1024)),
             decoded: None,
         };
     }
@@ -473,67 +483,76 @@ fn probe_zstd_frame(bytes: &[u8], offset: usize, remaining_budget: u64) -> ZstdP
         Ok(decoder) => decoder.single_frame(),
         Err(error) => {
             return ZstdProbe {
-                offset,
-                status: "decoder-init-failed".to_string(),
-                frame_content_size_bytes: declared_size,
+                offset, status: "decode-failed".to_string(), frame_content_size_bytes: declared_size,
                 compressed_frame_size_bytes: Some(frame_size),
                 trailing_bytes_after_frame: Some(payload.len() - frame_size),
-                note: error.to_string(),
+                observed_output_bytes: None,
+                note: format!("A complete frame boundary was found, but decoder initialization failed: {error}"),
                 decoded: None,
             };
         }
     };
     if let Err(error) = decoder.window_log_max(26) {
         return ZstdProbe {
-            offset,
-            status: "decoder-limit-failed".to_string(),
-            frame_content_size_bytes: declared_size,
+            offset, status: "limit-hit".to_string(), frame_content_size_bytes: declared_size,
             compressed_frame_size_bytes: Some(frame_size),
             trailing_bytes_after_frame: Some(payload.len() - frame_size),
-            note: format!("Could not apply the 64 MiB Zstandard window limit: {error}"),
+            observed_output_bytes: None,
+            note: format!("The Zstandard decoder could not apply its 64 MiB window limit: {error}"),
             decoded: None,
         };
     }
 
     let mut output = Vec::new();
-    let mut limited = decoder.take(output_limit + 1);
+    let mut limited = decoder.take(output_limit.saturating_add(1));
     match limited.read_to_end(&mut output) {
         Ok(_) if output.len() as u64 > output_limit => ZstdProbe {
-            offset,
-            status: "output-limit-exceeded".to_string(),
-            frame_content_size_bytes: declared_size,
+            offset, status: "limit-hit".to_string(), frame_content_size_bytes: declared_size,
             compressed_frame_size_bytes: Some(frame_size),
             trailing_bytes_after_frame: Some(payload.len() - frame_size),
-            note: format!("Decoded output exceeded the remaining {} MiB per-file budget.", output_limit / (1024 * 1024)),
+            observed_output_bytes: Some(output.len() as u64),
+            note: format!("Decoded output exceeded the remaining {} MiB cumulative per-file limit; partial output was discarded.", output_limit / (1024 * 1024)),
             decoded: None,
         },
         Ok(_) => {
             let decoded_size = output.len() as u64;
-            let size_matches = declared_size.map(|size| size == decoded_size);
-            let note = match size_matches {
-                Some(true) => "Frame decoded cleanly; declared content size matches output.".to_string(),
-                Some(false) => "Frame decoded, but declared content size does not match output.".to_string(),
-                None => "Frame decoded cleanly; frame did not declare its content size.".to_string(),
+            let status = match declared_size {
+                Some(size) if size == decoded_size => "decoded-size-matches",
+                Some(_) => "decoded-size-mismatch",
+                None => "decoded-size-unknown",
+            };
+            let note = match declared_size {
+                Some(size) if size == decoded_size => "Frame decoded completely and declared content size matches.".to_string(),
+                Some(size) => format!("Frame decoded completely, but declared content size {size} differs from actual output size {decoded_size}."),
+                None => format!("Frame decoded completely; content size was not declared. Actual output size: {decoded_size}."),
             };
             ZstdProbe {
-                offset,
-                status: "decoded-cleanly".to_string(),
-                frame_content_size_bytes: declared_size,
+                offset, status: status.to_string(), frame_content_size_bytes: declared_size,
                 compressed_frame_size_bytes: Some(frame_size),
                 trailing_bytes_after_frame: Some(payload.len() - frame_size),
-                note,
+                observed_output_bytes: Some(decoded_size), note,
                 decoded: Some(byte_diagnostics(&output)),
             }
         }
-        Err(error) => ZstdProbe {
-            offset,
-            status: "decode-failed".to_string(),
-            frame_content_size_bytes: declared_size,
-            compressed_frame_size_bytes: Some(frame_size),
-            trailing_bytes_after_frame: Some(payload.len() - frame_size),
-            note: format!("Zstandard frame validation/decompression failed: {error}"),
-            decoded: None,
-        },
+        Err(error) => {
+            let observed = output.len() as u64;
+            let error_text = error.to_string();
+            let is_limit = is_zstd_limit_error(&error_text);
+            let declared_mismatch = declared_size.is_some_and(|size| size != observed);
+            let (status, note) = if is_limit {
+                ("limit-hit", format!("Zstandard decoder hit a window or memory limit: {error_text}. Partial output ({observed} bytes) was discarded."))
+            } else if declared_mismatch {
+                ("decoded-size-mismatch", format!("Frame declares {declared_size:?} output bytes, but decoding stopped after observing {observed} bytes with an error: {error_text}. Partial output was discarded and is not treated as a decoded file."))
+            } else {
+                ("decode-failed", format!("Frame boundary was measured, but decompression failed: {error_text}. Partial output ({observed} bytes) was discarded."))
+            };
+            ZstdProbe {
+                offset, status: status.to_string(), frame_content_size_bytes: declared_size,
+                compressed_frame_size_bytes: Some(frame_size),
+                trailing_bytes_after_frame: Some(payload.len() - frame_size),
+                observed_output_bytes: Some(observed), note, decoded: None,
+            }
+        }
     }
 }
 
