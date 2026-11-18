@@ -302,7 +302,7 @@ fn find_embedded_signatures(bytes: &[u8]) -> Vec<String> {
     found
 }
 
-fn plxe_header_words(bytes: &[u8], plxe_offsets: &[usize], zstd_offsets: &[usize]) -> Vec<String> {
+fn plxe_header_words(bytes: &[u8], plxe_offsets: &[usize], zstd_offsets: &[usize], probes: &[ZstdProbe]) -> Vec<String> {
     let mut words = Vec::new();
     for &plxe_offset in plxe_offsets.iter().take(32) {
         let Some(header_start) = plxe_offset.checked_add(4) else { continue };
@@ -326,6 +326,11 @@ fn plxe_header_words(bytes: &[u8], plxe_offsets: &[usize], zstd_offsets: &[usize
                     matches.push("matches bytes from Zstandard candidate to EOF");
                     break;
                 }
+            }
+            if probes.iter().any(|probe| {
+                probe.offset >= header_start && probe.compressed_frame_size_bytes == Some(value as usize)
+            }) {
+                matches.push("matches compressed Zstandard frame length");
             }
             let match_text = if matches.is_empty() { String::new() } else { format!(" ({})", matches.join(", ")) };
             words.push(format!(
@@ -535,7 +540,6 @@ fn probe_zstd_frame(bytes: &[u8], offset: usize, remaining_budget: u64) -> ZstdP
 fn inspect_bytes(bytes: &[u8]) -> (ByteDiagnostics, Vec<String>, Vec<String>, usize, Vec<ZstdProbe>) {
     let plxe_offsets = find_signature_offsets(bytes, b"PLXE");
     let zstd_offsets = find_signature_offsets(bytes, ZSTD_MAGIC);
-    let header_words = plxe_header_words(bytes, &plxe_offsets, &zstd_offsets);
     let attempted = zstd_offsets.len().min(MAX_ZSTD_PROBES);
     let mut remaining_budget = MAX_DECOMPRESSED_BYTES;
     let mut probes = Vec::new();
@@ -548,6 +552,7 @@ fn inspect_bytes(bytes: &[u8]) -> (ByteDiagnostics, Vec<String>, Vec<String>, us
         }
         probes.push(probe);
     }
+    let header_words = plxe_header_words(bytes, &plxe_offsets, &zstd_offsets, &probes);
     let decoded_size_matches = plxe_header_decoded_size_matches(bytes, &plxe_offsets, &zstd_offsets, &probes);
     (byte_diagnostics(bytes), header_words, decoded_size_matches, zstd_offsets.len() - attempted, probes)
 }
@@ -969,6 +974,7 @@ mod tests {
         bytes.extend_from_slice(&compressed);
         bytes[4..8].copy_from_slice(&(compressed.len() as u32).to_le_bytes());
         bytes[8..12].copy_from_slice(&(original.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(b"footer!");
 
         let (_, header_words, decoded_matches, skipped, probes) = inspect_bytes(&bytes);
         assert_eq!(skipped, 0);
