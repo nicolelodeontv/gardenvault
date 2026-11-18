@@ -87,7 +87,23 @@ function renderVaults(vaults) {
       <div class="vault-row-actions"><button class="button secondary inspect-vault" type="button" data-file-name="${fileName}">Inspect</button><button class="button secondary export-vault" type="button" data-file-name="${fileName}">Export</button><span class="vault-row-status" aria-live="polite"></span></div>
     </article>`;
   }).join("")}</div>`;
-  for (const button of vaultList.querySelectorAll(".inspect-vault")) {\n    button.addEventListener("click", async () => {\n      const fileName = button.dataset.fileName;\n      const status = button.closest(".vault-row").querySelector(".vault-row-status");\n      const passphrase = inspectPassphraseInput?.value || "";\n      if (passphrase.length < 12) { status.textContent = "Enter the vault passphrase above."; status.className = "vault-row-status error"; inspectPassphraseInput?.focus(); return; }\n      button.disabled = true; status.textContent = "Decrypting in memory and checking file signatures…"; status.className = "vault-row-status";\n      try {\n        const report = await invoke("inspect_vault", { fileName, passphrase });\n        const details = report.files.map(file => `${file.name}: ${file.detectedFormat} · ${formatBytes(file.sizeBytes)} · SHA-256 verified · header ${file.signatureHex}`).join(" | ");\n        status.textContent = `${details}${report.identicalFiles ? " · Both captured files are identical." : ""}`;\n        status.className = "vault-row-status success";\n      } catch (error) { status.textContent = String(error); status.className = "vault-row-status error"; }\n      finally { button.disabled = false; if (inspectPassphraseInput) inspectPassphraseInput.value = ""; }\n    });\n  }\n  for (const button of vaultList.querySelectorAll(".export-vault")) {
+  for (const button of vaultList.querySelectorAll(".inspect-vault")) {
+    button.addEventListener("click", async () => {
+      const fileName = button.dataset.fileName;
+      const status = button.closest(".vault-row").querySelector(".vault-row-status");
+      const passphrase = inspectPassphraseInput?.value || "";
+      if (passphrase.length < 12) { status.textContent = "Enter the vault passphrase above."; status.className = "vault-row-status error"; inspectPassphraseInput?.focus(); return; }
+      button.disabled = true; status.textContent = "Decrypting in memory and checking file signatures…"; status.className = "vault-row-status";
+      try {
+        const report = await invoke("inspect_vault", { fileName, passphrase });
+        const details = report.files.map(file => `${file.name}: ${file.detectedFormat} · ${formatBytes(file.sizeBytes)} · SHA-256 verified · header ${file.signatureHex}`).join(" | ");
+        status.textContent = `${details}${report.identicalFiles ? " · Both captured files are identical." : ""}`;
+        status.className = "vault-row-status success";
+      } catch (error) { status.textContent = String(error); status.className = "vault-row-status error"; }
+      finally { button.disabled = false; if (inspectPassphraseInput) inspectPassphraseInput.value = ""; }
+    });
+  }
+  for (const button of vaultList.querySelectorAll(".export-vault")) {
     button.addEventListener("click", async () => {
       const fileName = button.dataset.fileName;
       const status = button.closest(".vault-row").querySelector(".vault-row-status");
