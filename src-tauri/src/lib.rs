@@ -5,12 +5,13 @@ use chrono::Utc;
 use rand::{rngs::OsRng, RngCore};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::{fs::{self, OpenOptions}, io::Write, path::{Path, PathBuf}, process::{Command, Output}};
+use std::{fs::{self, File, OpenOptions}, io::{Read, Write}, path::{Path, PathBuf}, process::{Command, Output}, time::UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 
 const GAME_PACKAGE: &str = "com.playrix.gardenscapes";
 const GAME_DATA_DIR: &str = "/data/user/0/com.playrix.gardenscapes/Documents";
 const MAX_SAVE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_VAULT_BYTES: u64 = (MAX_SAVE_BYTES as u64) * 3 + 1024 * 1024;
 const VAULT_MAGIC: &[u8; 7] = b"GVLT001";
 
 #[derive(Debug, Serialize, Clone)]
@@ -29,6 +30,10 @@ struct ReadProfileResult {
     vault_path: String,
     files: Vec<FileInfo>,
 }
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultListItem { file_name: String, size_bytes: u64, modified_at: u64 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -91,6 +96,20 @@ fn is_allowed_emulator_serial(serial: &str) -> bool {
 
 fn hash_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
+}
+
+fn is_valid_vault_file_name(file_name: &str) -> bool {
+    !file_name.is_empty()
+        && file_name.len() <= 128
+        && file_name.ends_with(".gvault")
+        && !file_name.chars().any(|c| c.is_control() || matches!(c, '/' | '\\' | ':'))
+        && Path::new(file_name).file_name().and_then(|name| name.to_str()) == Some(file_name)
+}
+
+fn app_vault_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let app_data = app.path().app_data_dir()
+        .map_err(|e| format!("Could not resolve GardenVault data folder: {e}"))?;
+    Ok(app_data.join("vaults"))
 }
 
 fn derive_key(passphrase: &str, salt: &[u8; 16]) -> Result<[u8; 32], String> {
@@ -183,6 +202,98 @@ fn capture_file(adb: &Path, serial: &str, file_name: &str) -> Result<Vec<u8>, St
 }
 
 #[tauri::command]
+fn list_vaults(app: AppHandle) -> Result<Vec<VaultListItem>, String> {
+    let vault_dir = app_vault_dir(&app)?;
+    fs::create_dir_all(&vault_dir)
+        .map_err(|e| format!("Could not open the encrypted backup folder: {e}"))?;
+
+    let entries = fs::read_dir(&vault_dir)
+        .map_err(|e| format!("Could not list encrypted backups: {e}"))?;
+    let mut vaults = Vec::new();
+
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Could not read backup entry: {e}"))?;
+        let file_name = entry.file_name().to_string_lossy().into_owned();
+        if !is_valid_vault_file_name(&file_name) {
+            continue;
+        }
+        let file_type = entry.file_type()
+            .map_err(|e| format!("Could not inspect backup file: {e}"))?;
+        if !file_type.is_file() {
+            continue;
+        }
+        let metadata = entry.metadata()
+            .map_err(|e| format!("Could not inspect backup metadata: {e}"))?;
+        if metadata.len() < 35 || metadata.len() > MAX_VAULT_BYTES {
+            continue;
+        }
+        let modified_at = metadata.modified().ok()
+            .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs())
+            .unwrap_or_default();
+
+        vaults.push(VaultListItem {
+            file_name,
+            size_bytes: metadata.len(),
+            modified_at,
+        });
+    }
+
+    vaults.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+    Ok(vaults)
+}
+
+#[tauri::command]
+fn export_vault(app: AppHandle, file_name: String) -> Result<Option<String>, String> {
+    if !is_valid_vault_file_name(&file_name) {
+        return Err("Invalid backup file name.".to_string());
+    }
+
+    let source = app_vault_dir(&app)?.join(&file_name);
+    let metadata = fs::symlink_metadata(&source)
+        .map_err(|e| format!("Could not open the selected backup: {e}"))?;
+    if !metadata.file_type().is_file() || metadata.len() < 35 || metadata.len() > MAX_VAULT_BYTES {
+        return Err("The selected backup is not a valid-sized regular vault file.".to_string());
+    }
+
+    let mut header = [0_u8; 7];
+    File::open(&source)
+        .and_then(|mut file| file.read_exact(&mut header))
+        .map_err(|e| format!("Could not verify the backup header: {e}"))?;
+    if &header != VAULT_MAGIC {
+        return Err("The selected file is not a recognized GardenVault backup.".to_string());
+    }
+
+    #[cfg(windows)]
+    {
+        let target = rfd::FileDialog::new()
+            .set_title("Export encrypted GardenVault backup")
+            .set_file_name(&file_name)
+            .add_filter("GardenVault encrypted backup", &["gvault"])
+            .save_file();
+        let Some(target) = target else {
+            return Ok(None);
+        };
+        let extension = target.extension().and_then(|value| value.to_str())
+            .unwrap_or_default().to_ascii_lowercase();
+        if extension != "gvault" {
+            return Err("Choose a destination with the .gvault extension.".to_string());
+        }
+        if target != source {
+            fs::copy(&source, &target)
+                .map_err(|e| format!("Could not export encrypted backup: {e}"))?;
+        }
+        Ok(Some(target.display().to_string()))
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = source;
+        Err("Encrypted backup export is currently supported in the Windows build.".to_string())
+    }
+}
+
+#[tauri::command]
 fn read_profile(app: AppHandle, serial: String, passphrase: String) -> Result<ReadProfileResult, String> {
     if !is_allowed_emulator_serial(&serial) {
         return Err("Unsupported device identifier. Choose a connected LDPlayer emulator.".to_string());
@@ -229,8 +340,7 @@ fn read_profile(app: AppHandle, serial: String, passphrase: String) -> Result<Re
     let plaintext = serde_json::to_vec(&payload).map_err(|e| format!("Could not prepare encrypted snapshot: {e}"))?;
     let encrypted = encrypt_vault(&passphrase, &plaintext)?;
 
-    let app_data = app.path().app_data_dir().map_err(|e| format!("Could not resolve GardenVault data folder: {e}"))?;
-    let vault_dir = app_data.join("vaults");
+    let vault_dir = app_vault_dir(&app)?;
     fs::create_dir_all(&vault_dir).map_err(|e| format!("Could not create encrypted backup folder: {e}"))?;
     let stamp = Utc::now().format("%Y%m%d-%H%M%S-%3f");
     let file_name = format!("gardenscapes-{stamp}.gvault");
@@ -255,7 +365,7 @@ fn read_profile(app: AppHandle, serial: String, passphrase: String) -> Result<Re
 
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![list_devices, read_profile])
+        .invoke_handler(tauri::generate_handler![list_devices, list_vaults, export_vault, read_profile])
         .run(tauri::generate_context!())
         .expect("error while running GardenVault");
 }
@@ -275,6 +385,15 @@ mod tests {
         assert!(!is_allowed_emulator_serial("emulator-5556;whoami"));
         assert!(!is_allowed_emulator_serial("phone-1234"));
         assert!(!is_allowed_emulator_serial("../../adb"));
+    }
+
+    #[test]
+    fn vault_file_names_reject_paths_and_unexpected_extensions() {
+        assert!(is_valid_vault_file_name("gardenscapes-20261118-120000.gvault"));
+        assert!(!is_valid_vault_file_name("../outside.gvault"));
+        assert!(!is_valid_vault_file_name("C:\\outside.gvault"));
+        assert!(!is_valid_vault_file_name("backup.txt"));
+        assert!(!is_valid_vault_file_name("bad\\nname.gvault"));
     }
 
     #[test]
