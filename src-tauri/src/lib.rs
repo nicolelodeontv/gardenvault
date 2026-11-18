@@ -3,7 +3,7 @@ use argon2::{Algorithm, Argon2, Params, Version};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use chrono::Utc;
 use rand::{rngs::OsRng, RngCore};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{fs::{self, File, OpenOptions}, io::{Read, Write}, path::{Path, PathBuf}, process::{Command, Output}, time::UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
@@ -35,7 +35,7 @@ struct ReadProfileResult {
 #[serde(rename_all = "camelCase")]
 struct VaultListItem { file_name: String, size_bytes: u64, modified_at: u64 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VaultSnapshot {
     schema_version: u32,
@@ -46,7 +46,7 @@ struct VaultSnapshot {
     files: Vec<VaultFile>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VaultFile {
     name: String,
@@ -155,6 +155,56 @@ fn decrypt_vault_for_test(passphrase: &str, input: &[u8]) -> Result<Vec<u8>, Str
         .map_err(|_| "Could not initialize AES-256-GCM".to_string())?;
     cipher.decrypt(Nonce::from_slice(&nonce), &input[35..])
         .map_err(|_| "Authentication failed: wrong password or damaged vault".to_string())
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InspectedFile {
+    name: String,
+    size_bytes: usize,
+    sha256: String,
+    detected_format: String,
+    signature_hex: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultInspection {
+    device_serial: String,
+    captured_at: String,
+    files: Vec<InspectedFile>,
+    identical_files: bool,
+}
+
+fn decrypt_vault(passphrase: &str, input: &[u8]) -> Result<Vec<u8>, String> {
+    if input.len() < 35 || input.len() as u64 > MAX_VAULT_BYTES {
+        return Err("Invalid or oversized GardenVault file.".to_string());
+    }
+    if &input[..7] != VAULT_MAGIC {
+        return Err("This is not a recognized GardenVault backup.".to_string());
+    }
+    let salt: [u8; 16] = input[7..23].try_into().map_err(|_| "Invalid vault salt".to_string())?;
+    let nonce: [u8; 12] = input[23..35].try_into().map_err(|_| "Invalid vault nonce".to_string())?;
+    let key = derive_key(passphrase, &salt)?;
+    let cipher = Aes256Gcm::new_from_slice(&key)
+        .map_err(|_| "Could not initialize AES-256-GCM".to_string())?;
+    cipher.decrypt(Nonce::from_slice(&nonce), &input[35..])
+        .map_err(|_| "Authentication failed: wrong passphrase or damaged backup".to_string())
+}
+
+fn detect_file_format(bytes: &[u8]) -> String {
+    if bytes.starts_with(b"SQLite format 3\\0") { return "SQLite 3 database".to_string(); }
+    if bytes.starts_with(b"PK\\x03\\x04") { return "ZIP archive".to_string(); }
+    if bytes.starts_with(&[0x1f, 0x8b]) { return "GZIP compressed data".to_string(); }
+    if bytes.starts_with(b"bplist00") { return "Apple binary property list".to_string(); }
+    let trimmed = bytes.iter().copied().skip_while(|b| b.is_ascii_whitespace()).collect::<Vec<_>>();
+    if trimmed.starts_with(b"{") || trimmed.starts_with(b"[") {
+        return if serde_json::from_slice::<serde_json::Value>(bytes).is_ok() { "JSON".to_string() } else { "JSON-like text (invalid JSON)".to_string() };
+    }
+    if trimmed.starts_with(b"<?xml") || trimmed.starts_with(b"<") { return "XML-like text".to_string(); }
+    if bytes.starts_with(b"UnityFS") { return "UnityFS asset bundle".to_string(); }
+    if bytes.starts_with(b"ENC") { return "Unknown binary (ENC prefix)".to_string(); }
+    "Unknown binary format".to_string()
 }
 
 fn list_devices_inner() -> Result<Vec<DeviceInfo>, String> {
@@ -304,6 +354,60 @@ fn export_vault(app: AppHandle, file_name: String) -> Result<Option<String>, Str
 }
 
 #[tauri::command]
+fn inspect_vault(app: AppHandle, file_name: String, passphrase: String) -> Result<VaultInspection, String> {
+    if !is_valid_vault_file_name(&file_name) {
+        return Err("Invalid backup file name.".to_string());
+    }
+    if passphrase.chars().count() < 12 || passphrase.len() > 256 {
+        return Err("Enter the original vault passphrase (at least 12 characters).".to_string());
+    }
+    let source = app_vault_dir(&app)?.join(&file_name);
+    let metadata = fs::symlink_metadata(&source)
+        .map_err(|e| format!("Could not open the selected backup: {e}"))?;
+    if !metadata.file_type().is_file() || metadata.len() < 35 || metadata.len() > MAX_VAULT_BYTES {
+        return Err("The selected backup is not a valid-sized regular vault file.".to_string());
+    }
+    let mut encrypted = Vec::with_capacity(metadata.len() as usize);
+    File::open(&source).and_then(|mut file| file.read_to_end(&mut encrypted))
+        .map_err(|e| format!("Could not read encrypted backup: {e}"))?;
+    let plaintext = decrypt_vault(&passphrase, &encrypted)?;
+    let snapshot: VaultSnapshot = serde_json::from_slice(&plaintext)
+        .map_err(|_| "Decrypted backup has an unsupported snapshot structure.".to_string())?;
+    if snapshot.product != "GardenVault" || snapshot.package != GAME_PACKAGE || snapshot.schema_version != 1 {
+        return Err("Snapshot metadata is not a supported Gardenscapes capture.".to_string());
+    }
+    let mut inspected = Vec::new();
+    for file in snapshot.files {
+        if !matches!(file.name.as_str(), "GameData.db" | "GameData.db.bak") {
+            return Err("Snapshot contains an unexpected file entry.".to_string());
+        }
+        let bytes = BASE64.decode(&file.content_base64)
+            .map_err(|_| "Snapshot contains invalid encoded file data.".to_string())?;
+        if bytes.len() != file.size_bytes || hash_hex(&bytes) != file.sha256 {
+            return Err(format!("Integrity check failed for {}.", file.name));
+        }
+        let signature_hex = hex::encode(bytes.iter().take(16).copied().collect::<Vec<_>>());
+        inspected.push(InspectedFile {
+            name: file.name,
+            size_bytes: bytes.len(),
+            sha256: file.sha256,
+            detected_format: detect_file_format(&bytes),
+            signature_hex,
+        });
+    }
+    if inspected.is_empty() {
+        return Err("Snapshot contains no save files.".to_string());
+    }
+    let identical_files = inspected.len() > 1 && inspected.iter().all(|f| f.sha256 == inspected[0].sha256);
+    Ok(VaultInspection {
+        device_serial: snapshot.device_serial,
+        captured_at: snapshot.captured_at,
+        files: inspected,
+        identical_files,
+    })
+}
+
+#[tauri::command]
 fn read_profile(app: AppHandle, serial: String, passphrase: String) -> Result<ReadProfileResult, String> {
     if !is_allowed_emulator_serial(&serial) {
         return Err("Unsupported device identifier. Choose a connected LDPlayer emulator.".to_string());
@@ -375,7 +479,7 @@ fn read_profile(app: AppHandle, serial: String, passphrase: String) -> Result<Re
 
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![list_devices, list_vaults, export_vault, read_profile])
+        .invoke_handler(tauri::generate_handler![list_devices, list_vaults, export_vault, inspect_vault, read_profile])
         .run(tauri::generate_context!())
         .expect("error while running GardenVault");
 }
@@ -418,6 +522,13 @@ mod tests {
         assert!(!is_valid_vault_file_name("C:\\outside.gvault"));
         assert!(!is_valid_vault_file_name("backup.txt"));
         assert!(!is_valid_vault_file_name("bad\\nname.gvault"));
+    }
+
+    #[test]
+    fn file_signature_detection_is_read_only_and_conservative() {
+        assert_eq!(detect_file_format(b"SQLite format 3\\0rest"), "SQLite 3 database");
+        assert_eq!(detect_file_format(b"PK\\x03\\x04archive"), "ZIP archive");
+        assert_eq!(detect_file_format(b"not a known header"), "Unknown binary format");
     }
 
     #[test]
