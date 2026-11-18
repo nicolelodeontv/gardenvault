@@ -76,12 +76,12 @@ jobs:
         run: npm install --no-audit --no-fund
       - name: Run frontend tests
         run: npm test
+      - name: Generate application icons
+        run: npm run tauri -- icon src-tauri/icons/gardenvault.svg
       - name: Format Rust source
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all
       - name: Run Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
-      - name: Generate application icons
-        run: npm run tauri -- icon src-tauri/icons/gardenvault.svg
       - name: Build Windows app and NSIS installer
         run: npm run tauri:build
       - name: Verify build outputs
