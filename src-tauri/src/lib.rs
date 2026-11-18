@@ -835,6 +835,61 @@ mod tests {
     }
 
     #[test]
+    fn signature_scan_finds_every_strong_hit_through_the_tail() {
+        let mut bytes = vec![0_u8; 70 * 1024];
+        bytes[12..16].copy_from_slice(b"PLXE");
+        bytes[64 * 1024 + 9..64 * 1024 + 13].copy_from_slice(ZSTD_MAGIC);
+        bytes[70 * 1024 - 8..70 * 1024 - 4].copy_from_slice(b"PLXE");
+        assert_eq!(find_signature_offsets(&bytes, b"PLXE"), vec![12, 70 * 1024 - 8]);
+        assert_eq!(find_signature_offsets(&bytes, ZSTD_MAGIC), vec![64 * 1024 + 9]);
+        let diagnostics = byte_diagnostics(&bytes);
+        assert_eq!(diagnostics.size_mod_16, bytes.len() % 16);
+        assert_eq!(diagnostics.size_mod_512, bytes.len() % 512);
+        assert_eq!(diagnostics.size_mod_4096, bytes.len() % 4096);
+        assert_eq!(diagnostics.tail_hex.len(), 64);
+        assert!(diagnostics.embedded_signatures.iter().any(|hit| hit.contains("0x10")));
+        assert!(diagnostics.embedded_signatures.iter().any(|hit| hit.contains("0x111F8")));
+    }
+
+    #[test]
+    fn zstd_probe_decodes_one_frame_and_ignores_trailing_data() {
+        let original = b"SQLite format 3\\0GardenVault test payload";
+        let compressed = zstd::stream::encode_all(Cursor::new(original), 1).expect("encode zstd test frame");
+        let mut bytes = b"prefixPLXE".to_vec();
+        let frame_offset = bytes.len();
+        bytes.extend_from_slice(&compressed);
+        bytes.extend_from_slice(b"trailing-footer");
+        let probe = probe_zstd_frame(&bytes, frame_offset);
+        assert_eq!(probe.status, "decoded-cleanly");
+        assert_eq!(probe.frame_content_size_bytes, Some(original.len() as u64));
+        assert_eq!(probe.compressed_frame_size_bytes, Some(compressed.len()));
+        assert_eq!(probe.trailing_bytes_after_frame, Some(b"trailing-footer".len()));
+        let decoded = probe.decoded.expect("decoded file diagnostics");
+        assert_eq!(decoded.detected_format, "SQLite 3 database");
+        assert_eq!(decoded.sha256, hash_hex(original));
+    }
+
+    #[test]
+    fn all_zstd_candidates_are_attempted_and_plxe_lengths_are_compared() {
+        let first = zstd::stream::encode_all(Cursor::new(b"first decoded payload"), 1).expect("first frame");
+        let second = zstd::stream::encode_all(Cursor::new(b"second decoded payload"), 1).expect("second frame");
+        let mut bytes = b"PLXE".to_vec();
+        bytes.extend_from_slice(&(first.len() as u32).to_le_bytes());
+        let first_offset = bytes.len();
+        bytes.extend_from_slice(&first);
+        bytes.extend_from_slice(b"separator");
+        let second_offset = bytes.len();
+        bytes.extend_from_slice(&second);
+
+        let (_, header_words, skipped, probes) = inspect_bytes(&bytes);
+        assert_eq!(find_signature_offsets(&bytes, ZSTD_MAGIC), vec![first_offset, second_offset]);
+        assert_eq!(probes.len(), 2);
+        assert_eq!(skipped, 0);
+        assert!(probes.iter().all(|probe| probe.status == "decoded-cleanly"));
+        assert!(header_words.iter().any(|word| word.contains("matches bytes from Zstandard candidate to EOF")));
+    }
+
+    #[test]
     fn encrypted_vault_round_trips_and_authenticates() {
         let original = b"GardenVault encrypted snapshot test";
         let encrypted = encrypt_vault("correct horse battery staple", original).expect("encrypt");
