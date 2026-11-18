@@ -193,8 +193,8 @@ fn decrypt_vault(passphrase: &str, input: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 fn detect_file_format(bytes: &[u8]) -> String {
-    if bytes.starts_with(b"SQLite format 3\\0") { return "SQLite 3 database".to_string(); }
-    if bytes.starts_with(b"PK\\x03\\x04") { return "ZIP archive".to_string(); }
+    if bytes.starts_with(b"SQLite format 3\0") { return "SQLite 3 database".to_string(); }
+    if bytes.starts_with(b"PK\x03\x04") { return "ZIP archive".to_string(); }
     if bytes.starts_with(&[0x1f, 0x8b]) { return "GZIP compressed data".to_string(); }
     if bytes.starts_with(b"bplist00") { return "Apple binary property list".to_string(); }
     let trimmed = bytes.iter().copied().skip_while(|b| b.is_ascii_whitespace()).collect::<Vec<_>>();
@@ -526,8 +526,8 @@ mod tests {
 
     #[test]
     fn file_signature_detection_is_read_only_and_conservative() {
-        assert_eq!(detect_file_format(b"SQLite format 3\\0rest"), "SQLite 3 database");
-        assert_eq!(detect_file_format(b"PK\\x03\\x04archive"), "ZIP archive");
+        assert_eq!(detect_file_format(b"SQLite format 3\0rest"), "SQLite 3 database");
+        assert_eq!(detect_file_format(b"PK\x03\x04archive"), "ZIP archive");
         assert_eq!(detect_file_format(b"not a known header"), "Unknown binary format");
     }
 
