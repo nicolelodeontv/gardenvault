@@ -1,6 +1,6 @@
 # Product roadmap
 
-## v1.0.0-rc.9 — Read-only binary forensics
+## v1.0.0-rc.10 — Read-only transform diagnostics
 - [x] Authenticated in-memory snapshot inspection and SHA-256 verification
 - [x] Scan the complete file for every occurrence of the known strong signatures
 - [x] Record all Zstandard candidate offsets and attempt bounded streaming decode at each (up to 32 per file)
@@ -9,6 +9,10 @@
 - [x] Inspect decompressed output for file type, signatures, SHA-256, entropy, and byte statistics
 - [x] Parse PLXE-adjacent little-endian u32 fields and compare against file/payload lengths
 - [x] Report whole-file, first-256-byte, remainder, and tail entropy
+- [x] Profile every 4 KiB block for entropy, printable/zero ratios, and unique byte counts
+- [x] Add a bounded single-byte XOR text-likeness sweep with an exact SQLite-header transform check
+- [x] Score repeating-key XOR candidates for every key length from 1 through 32 using bounded sample windows
+- [x] Label XOR scores and candidate keys as exploratory heuristics, not format or encryption conclusions
 - [x] Report size modulo 16, 512, and 4096, plus the last 32 bytes in hex
 - [x] Compare PLXE u32 fields against both compressed payload lengths and decoded frame output sizes
 - [x] Share a 20 MiB retained-output budget across all candidate frames in each file

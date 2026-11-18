@@ -2,7 +2,7 @@
 
 GardenVault is a local-first Windows desktop utility for reading Gardenscapes profile files from an authorized LDPlayer 14 instance and creating encrypted offline snapshots.
 
-## v1.0.0-rc.9 — Read-only binary forensics
+## v1.0.0-rc.10 — Read-only binary forensics
 
 - Detect connected LDPlayer emulators through ADB and verify the Gardenscapes package and root availability.
 - Capture `GameData.db` and `GameData.db.bak` only after confirming the game process is stopped. GardenVault does not force-stop the game; close it manually so its save can finish. For each file, the emulator reports `stat -c %s` and its own `sha256sum` before streaming bytes through `adb exec-out`; GardenVault rejects a size mismatch, digest mismatch, zero-length file, root-shell failure, or incomplete transfer. The optional `GameData.db-wal` is captured only when an explicit missing/present check confirms it; if absent, it is not added to snapshot files or file metadata. When present, compare main-database hashes before/after the WAL capture and compare WAL hashes from reads immediately before and after the selected WAL snapshot. These checks detect transfer corruption and concurrent changes, but are not a filesystem-atomic snapshot.
@@ -11,6 +11,8 @@ GardenVault is a local-first Windows desktop utility for reading Gardenscapes pr
 - Decrypt a selected snapshot only in memory after passphrase entry and verify embedded file size and SHA-256. New RC9 snapshots record whether device-side stat and SHA-256 matched the received bytes; older RC8 vaults remain readable but are clearly marked as lacking that source-transfer attestation.
 - Scan the complete captured file for every strong signature offset, including signatures that straddle the 64 KiB boundary or occur in the final four bytes.
 - Report first-256-byte, remainder, whole-file, and tail entropy; printable/zero-byte ratios; unique byte count; size alignment; and tail hex.
+- Profile every 4 KiB block for entropy, printable ratio, zero-byte ratio, and distinct byte values; report full-file aggregates while keeping the displayed block list compact.
+- Run a bounded single-byte XOR sweep and a repeating-key XOR heuristic for key lengths 1–32. These rank text-likeness candidates and check for a SQLite magic transform but do not identify the format or prove encryption.
 - Parse little-endian u32 words following each PLXE magic and compare plausible lengths with the file, candidate payload, and successfully decoded output sizes.
 - Attempt bounded streaming Zstandard decoding at candidate offsets. Report explicit statuses (`signature-only`, `incomplete`, `decode-failed`, `limit-hit`, `decoded-size-matches`, and `decoded-size-mismatch`), frame offsets, declared/observed sizes, compressed frame sizes, trailing bytes, and diagnostics for complete decoded output.
 - Skip candidate magic that falls inside an already measured frame, while still attempting a new frame exactly at the prior frame boundary.
@@ -19,7 +21,7 @@ GardenVault is a local-first Windows desktop utility for reading Gardenscapes pr
 
 ## Compatibility limits
 
-The supplied `GameData.db` has not yet been confirmed as SQLite, a PLXE container, or any other known format. SQLite inspection only runs after the standard SQLite header is detected. Defensive mode, query-only mode, disabled extension loading, `trusted_schema=OFF`, and a 500 ms SQLite progress-handler budget are applied. If `quick_check` is interrupted by that budget, the report is “inconclusive (time budget)” rather than a failed/corrupt check. If either SQLite header format-version byte (18 or 19) is `2`, the report says “WAL-mode database, main file only, may be stale” and skips `quick_check`. A PLXE/Zstandard signature match is only a candidate until the frame validates and decompresses cleanly. High entropy alone does not prove encryption because compressed data can also have high entropy.
+The supplied `GameData.db` has not yet been confirmed as SQLite, a PLXE container, or any other known format. SQLite inspection only runs after the standard SQLite header is detected. Defensive mode, query-only mode, disabled extension loading, `trusted_schema=OFF`, and a 500 ms SQLite progress-handler budget are applied. If `quick_check` is interrupted by that budget, the report is “inconclusive (time budget)” rather than a failed/corrupt check. If either SQLite header format-version byte (18 or 19) is `2`, the report says “WAL-mode database, main file only, may be stale” and skips `quick_check`. A PLXE/Zstandard signature match is only a candidate until the frame validates and decompresses cleanly. XOR text-likeness scores and inferred key bytes are exploratory heuristics that can overfit, especially at longer key lengths; they are not proof of a cipher or a successful decode. High entropy alone does not prove encryption because compressed data can also have high entropy.
 
 Even a successfully decoded local database would not prove it is the authoritative record for coins, boosters, or level progress. Gardenscapes can synchronize progress with Playrix services. Editing, restore-to-game, and live Apply remain disabled until the file structure, integrity rules, and relationship to server-synced progress are independently verified.
 
@@ -29,7 +31,7 @@ Playrix says progress is automatically saved while connected to the internet: [P
 
 ## Verification status
 
-**RC9 is not verified yet.** The Windows native Rust test suite must pass in full and the Windows x64 installer must complete successfully before this build is treated as ready. Then verify the downloaded installer's SHA-256, perform a clean-profile install, and validate capture against a real LDPlayer 14 device. A successful frontend test run alone is not sufficient.
+**Device verification remains pending.** A green CI build and passing automated tests do not replace the downloaded installer SHA-256 check, RC8-vault compatibility test, clean-profile installation, wrong-passphrase/truncated-vault rejection, uninstall review, and a real LDPlayer 14 capture with matching device-side size and SHA-256.
 
 ## Build on Windows
 

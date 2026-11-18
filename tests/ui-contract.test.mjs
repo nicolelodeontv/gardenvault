@@ -61,3 +61,11 @@ test("capture UI distinguishes device attestation from vault-only integrity and 
   assert.match(js, /Device SHA-256 matched/);
   assert.doesNotMatch(js, /SHA-256 verified/);
 });
+
+test("inspector exposes bounded 4 KiB block and XOR heuristic diagnostics", () => {
+  assert.match(js, /blockProfile/);
+  assert.match(js, /singleByteXor/);
+  assert.match(js, /repeatingKeyXor/);
+  assert.match(js, /SQLite magic key/);
+  assert.match(js, /middle blocks analyzed but omitted/);
+});

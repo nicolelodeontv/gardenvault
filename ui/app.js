@@ -107,6 +107,32 @@ function renderVaults(vaults) {
           const embedded = (file.embeddedSignatures || []).join("\n  ");
           const headerWords = (file.plxeHeaderWords || []).join("\n  ") || "No PLXE header fields found";
           const decodedSizeMatches = (file.plxeHeaderDecodedSizeMatches || []).join("\n  ") || "No PLXE words matched a successfully decoded output size";
+          const transform = file.transformDiagnostics || {};
+          const blocks = transform.blockProfile || {};
+          const blockRows = blocks.blocks || [];
+          const shownBlockRows = blockRows.length <= 32 ? blockRows : [...blockRows.slice(0, 16), ...blockRows.slice(-16)];
+          const blockLines = shownBlockRows.map(block =>
+            `#${block.blockIndex} @ 0x${Number(block.offsetBytes).toString(16).toUpperCase()} · ${Number(block.sizeBytes).toLocaleString()} B · entropy ${Number(block.entropyBitsPerByte).toFixed(3)} · printable ${Number(block.printableAsciiPercent).toFixed(1)}% · zero ${Number(block.zeroBytePercent).toFixed(1)}% · unique ${block.uniqueByteValues}`
+          ).join("\n  ");
+          const omittedBlocks = Math.max(0, blockRows.length - shownBlockRows.length);
+          const blockSummary = `4 KiB block profile: ${blocks.blockCount || 0} blocks · entropy min/mean/max ${Number(blocks.minEntropyBitsPerByte || 0).toFixed(3)} / ${Number(blocks.meanEntropyBitsPerByte || 0).toFixed(3)} / ${Number(blocks.maxEntropyBitsPerByte || 0).toFixed(3)} · mean printable ${Number(blocks.meanPrintableAsciiPercent || 0).toFixed(1)}% · mean zero ${Number(blocks.meanZeroBytePercent || 0).toFixed(1)}%
+  ${blockLines || "No blocks"}
+  ${omittedBlocks ? `… ${omittedBlocks} middle blocks analyzed but omitted from this compact view.` : ""}`;
+          const xor = transform.singleByteXor || {};
+          const xorCandidates = (xor.topCandidates || []).map(candidate =>
+            `0x${Number(candidate.keyByte).toString(16).padStart(2, "0").toUpperCase()} · score ${Number(candidate.textScore).toFixed(1)} · printable ${Number(candidate.printableAsciiPercent).toFixed(1)}%${candidate.sqliteMagicMatch ? " · SQLite magic match" : ""}`
+          ).join("\n  ") || "No candidates";
+          const xorSummary = `Single-byte XOR sweep: ${Number(xor.sampledBytes || 0).toLocaleString()} sampled bytes · SQLite magic key: ${xor.sqliteMagicXorKey == null ? "none" : `0x${Number(xor.sqliteMagicXorKey).toString(16).padStart(2, "0").toUpperCase()}`}
+  ${xorCandidates}
+  ${xor.note || ""}`;
+          const repeating = transform.repeatingKeyXor || {};
+          const repeatingCandidates = [...(repeating.candidates || [])].sort((a, b) => Number(b.textScore) - Number(a.textScore)).slice(0, 8).map(candidate =>
+            `length ${candidate.keyLength} · key ${candidate.keyHex} · score ${Number(candidate.textScore).toFixed(1)} · printable ${Number(candidate.printableAsciiPercent).toFixed(1)}% · letters/spaces ${Number(candidate.lettersAndSpacesPercent).toFixed(1)}%`
+          ).join("\n  ") || "No candidates";
+          const repeatingSummary = `Repeating-key XOR: lengths ${repeating.minKeyLength || 1}–${repeating.maxKeyLength || 32} tested (${repeating.keyLengthsTested || 0}) · ${Number(repeating.sampledBytes || 0).toLocaleString()} bytes in ${repeating.sampleSegments || 0} contiguous sample window(s)
+  Top heuristic candidates:
+  ${repeatingCandidates}
+  ${repeating.note || ""}`;
           const skippableFrames = (file.zstdSkippableFrames || []).map(frame =>
             `Skippable frame @ 0x${Number(frame.offset).toString(16).toUpperCase()} · id ${frame.frameId} · ${frame.status}
 Magic: ${frame.magicHex} · declared payload: ${formatBytes(frame.declaredPayloadBytes)} · available: ${formatBytes(frame.availablePayloadBytes)}
@@ -142,6 +168,9 @@ ${decoded}`;
           }).join("\n\n") || "No Zstandard candidates found";
           return `${file.name}: ${file.detectedFormat} · vault payload SHA-256 matches stored metadata
 Size: ${Number(file.sizeBytes).toLocaleString()} bytes · mod 16: ${file.sizeMod16} · mod 512: ${file.sizeMod512} · mod 4096: ${file.sizeMod4096}
+${blockSummary}
+${xorSummary}
+${repeatingSummary}
 Entropy (whole): ${Number(file.entropyBitsPerByte).toFixed(3)} bits/byte · ${file.entropyAssessment}
 Entropy (first 256): ${Number(file.header256EntropyBitsPerByte).toFixed(3)} · remainder: ${Number(file.bodyEntropyAfter256BitsPerByte).toFixed(3)} · tail 256: ${Number(file.tail256EntropyBitsPerByte).toFixed(3)}
 Printable ASCII: ${Number(file.printableAsciiPercent).toFixed(1)}% · zero bytes: ${Number(file.zeroBytePercent).toFixed(1)}% · unique byte values: ${file.uniqueByteValues}/256

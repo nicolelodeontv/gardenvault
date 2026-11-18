@@ -223,6 +223,81 @@ struct ByteDiagnostics {
     sqlite_database: Option<SqliteDiagnostics>,
 }
 
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BlockProfileEntry {
+    block_index: usize,
+    offset_bytes: usize,
+    size_bytes: usize,
+    entropy_bits_per_byte: f64,
+    printable_ascii_percent: f64,
+    zero_byte_percent: f64,
+    unique_byte_values: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BlockProfileDiagnostics {
+    block_size_bytes: usize,
+    block_count: usize,
+    mean_entropy_bits_per_byte: f64,
+    min_entropy_bits_per_byte: f64,
+    max_entropy_bits_per_byte: f64,
+    mean_printable_ascii_percent: f64,
+    mean_zero_byte_percent: f64,
+    blocks: Vec<BlockProfileEntry>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct XorCandidate {
+    key_byte: u8,
+    text_score: f64,
+    printable_ascii_percent: f64,
+    sqlite_magic_match: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SingleByteXorDiagnostics {
+    sampled_bytes: usize,
+    sample_method: String,
+    sqlite_magic_xor_key: Option<u8>,
+    top_candidates: Vec<XorCandidate>,
+    note: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RepeatingKeyXorCandidate {
+    key_length: usize,
+    key_hex: String,
+    text_score: f64,
+    printable_ascii_percent: f64,
+    letters_and_spaces_percent: f64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RepeatingKeyXorDiagnostics {
+    min_key_length: usize,
+    max_key_length: usize,
+    key_lengths_tested: usize,
+    sampled_bytes: usize,
+    sample_segments: usize,
+    candidates: Vec<RepeatingKeyXorCandidate>,
+    note: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TransformDiagnostics {
+    block_profile: BlockProfileDiagnostics,
+    single_byte_xor: SingleByteXorDiagnostics,
+    repeating_key_xor: RepeatingKeyXorDiagnostics,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ZstdProbe {
@@ -262,6 +337,7 @@ struct InspectedFile {
     zstd_candidates_overlapping_skipped: usize,
     zstd_skippable_frames: Vec<ZstdSkippableFrame>,
     zstd_probes: Vec<ZstdProbe>,
+    transform_diagnostics: TransformDiagnostics,
 }
 
 #[derive(Debug, Serialize)]
@@ -745,6 +821,206 @@ fn find_zstd_skippable_frames(bytes: &[u8]) -> Vec<ZstdSkippableFrame> {
         }
     }
     frames
+}
+
+
+const TRANSFORM_SAMPLE_BYTES: usize = 64 * 1024;
+const TRANSFORM_BLOCK_BYTES: usize = 4 * 1024;
+const REPEATING_XOR_MIN_KEY_LENGTH: usize = 1;
+const REPEATING_XOR_MAX_KEY_LENGTH: usize = 32;
+const REPEATING_XOR_SEGMENT_BYTES: usize = 8 * 1024;
+const REPEATING_XOR_SEGMENT_COUNT: usize = 8;
+
+fn mean_value(values: &[f64]) -> f64 {
+    if values.is_empty() { 0.0 } else { values.iter().sum::<f64>() / values.len() as f64 }
+}
+
+fn block_profile(bytes: &[u8]) -> BlockProfileDiagnostics {
+    let blocks = bytes.chunks(TRANSFORM_BLOCK_BYTES).enumerate().map(|(block_index, chunk)| BlockProfileEntry {
+        block_index,
+        offset_bytes: block_index * TRANSFORM_BLOCK_BYTES,
+        size_bytes: chunk.len(),
+        entropy_bits_per_byte: byte_entropy(chunk),
+        printable_ascii_percent: byte_percent(chunk, |byte| (0x20..=0x7e).contains(&byte)),
+        zero_byte_percent: byte_percent(chunk, |byte| byte == 0),
+        unique_byte_values: unique_byte_count(chunk),
+    }).collect::<Vec<_>>();
+    let entropies = blocks.iter().map(|block| block.entropy_bits_per_byte).collect::<Vec<_>>();
+    let printable = blocks.iter().map(|block| block.printable_ascii_percent).collect::<Vec<_>>();
+    let zeroes = blocks.iter().map(|block| block.zero_byte_percent).collect::<Vec<_>>();
+    BlockProfileDiagnostics {
+        block_size_bytes: TRANSFORM_BLOCK_BYTES,
+        block_count: blocks.len(),
+        mean_entropy_bits_per_byte: mean_value(&entropies),
+        min_entropy_bits_per_byte: entropies.iter().copied().reduce(f64::min).unwrap_or(0.0),
+        max_entropy_bits_per_byte: entropies.iter().copied().reduce(f64::max).unwrap_or(0.0),
+        mean_printable_ascii_percent: mean_value(&printable),
+        mean_zero_byte_percent: mean_value(&zeroes),
+        blocks,
+    }
+}
+
+fn text_likeness_weight(byte: u8) -> f64 {
+    match byte {
+        b' ' => 3.2,
+        b'\n' | b'\r' | b'\t' => 1.1,
+        b'e' | b't' | b'a' | b'o' | b'i' | b'n => 2.9,
+        b'E' | b'T' | b'A' | b'O' | b'I' | b'N => 2.4,
+        b's' | b'h' | b'r' | b'd' | b'l' | b'u'
+        | b'S' | b'H' | b'R' | b'D' | b'L' | b'U' => 2.0,
+        b'a'..=b'z' | b'A'..=b'Z' => 1.7,
+        b'0'..=b'9' => 0.8,
+        b'.' | b',' | b';' | b':' | b'!' | b'?' | b'\'' | b'"'
+        | b'(' | b')' | b'[' | b']' | b'{' | b'}'
+        | b'/' | b'\\' | b'-' | b'_' => 0.7,
+        0x20..=0x7e => 0.0,
+        _ => -4.0,
+    }
+}
+
+fn text_likeness_score(total_weight: f64, count: usize) -> f64 {
+    if count == 0 { return 0.0; }
+    let average_weight = total_weight / count as f64;
+    (((average_weight + 4.0) / 8.0) * 100.0).clamp(0.0, 100.0)
+}
+
+fn evenly_spaced_sample(bytes: &[u8], maximum: usize) -> Vec<u8> {
+    if bytes.len() <= maximum { return bytes.to_vec(); }
+    let sample_count = maximum.max(2).min(bytes.len());
+    (0..sample_count).map(|index| {
+        let source_index = index * (bytes.len() - 1) / (sample_count - 1);
+        bytes[source_index]
+    }).collect()
+}
+
+fn sqlite_magic_xor_key(bytes: &[u8]) -> Option<u8> {
+    const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
+    let first = *bytes.first()?;
+    let key = first ^ SQLITE_HEADER[0];
+    bytes.get(..SQLITE_HEADER.len())?.iter().zip(SQLITE_HEADER.iter())
+        .all(|(actual, expected)| (*actual ^ key) == *expected).then_some(key)
+}
+
+fn score_single_byte_xor(sample: &[u8], key: u8) -> XorCandidate {
+    let mut total_weight = 0.0;
+    let mut printable_count = 0_usize;
+    for byte in sample {
+        let decoded = *byte ^ key;
+        total_weight += text_likeness_weight(decoded);
+        if (0x20..=0x7e).contains(&decoded) { printable_count += 1; }
+    }
+    XorCandidate {
+        key_byte: key,
+        text_score: text_likeness_score(total_weight, sample.len()),
+        printable_ascii_percent: if sample.is_empty() { 0.0 } else { printable_count as f64 * 100.0 / sample.len() as f64 },
+        sqlite_magic_match: false,
+    }
+}
+
+fn single_byte_xor_diagnostics(bytes: &[u8]) -> SingleByteXorDiagnostics {
+    let sample = evenly_spaced_sample(bytes, TRANSFORM_SAMPLE_BYTES);
+    let magic_key = sqlite_magic_xor_key(bytes);
+    let mut candidates = (0_u16..=255).map(|key| score_single_byte_xor(&sample, key as u8)).collect::<Vec<_>>();
+    for candidate in &mut candidates { candidate.sqlite_magic_match = magic_key == Some(candidate.key_byte); }
+    candidates.sort_by(|left, right| {
+        right.text_score.total_cmp(&left.text_score)
+            .then_with(|| right.printable_ascii_percent.total_cmp(&left.printable_ascii_percent))
+            .then_with(|| left.key_byte.cmp(&right.key_byte))
+    });
+    candidates.truncate(5);
+    if let Some(key) = magic_key {
+        if !candidates.iter().any(|candidate| candidate.key_byte == key) {
+            let mut candidate = score_single_byte_xor(&sample, key);
+            candidate.sqlite_magic_match = true;
+            candidates.push(candidate);
+        }
+    }
+    SingleByteXorDiagnostics {
+        sampled_bytes: sample.len(),
+        sample_method: "Evenly spaced across the complete file, capped at 65,536 bytes.".to_string(),
+        sqlite_magic_xor_key: magic_key,
+        top_candidates: candidates,
+        note: "Heuristic only: candidates are scored for ASCII text-likeness. A score is not a decryption result or format identification; no transformed bytes are saved.".to_string(),
+    }
+}
+
+fn repeating_key_segments(bytes: &[u8]) -> Vec<(usize, Vec<u8>)> {
+    if bytes.len() <= TRANSFORM_SAMPLE_BYTES { return vec![(0, bytes.to_vec())]; }
+    let segment_count = REPEATING_XOR_SEGMENT_COUNT.min(bytes.len().div_ceil(REPEATING_XOR_SEGMENT_BYTES)).max(2);
+    let segment_len = REPEATING_XOR_SEGMENT_BYTES.min(bytes.len());
+    (0..segment_count).map(|index| {
+        let start = (bytes.len() - segment_len) * index / (segment_count - 1);
+        (start, bytes[start..start + segment_len].to_vec())
+    }).collect()
+}
+
+fn repeating_key_xor_candidate(segments: &[(usize, Vec<u8>)], key_length: usize) -> RepeatingKeyXorCandidate {
+    let mut histograms = [[0_usize; 256]; REPEATING_XOR_MAX_KEY_LENGTH];
+    for (segment_start, segment) in segments {
+        for (index, byte) in segment.iter().enumerate() {
+            let column = (segment_start + index) % key_length;
+            histograms[column][*byte as usize] += 1;
+        }
+    }
+
+    let mut key = Vec::with_capacity(key_length);
+    for histogram in histograms.iter().take(key_length) {
+        let mut best_key = 0_u8;
+        let mut best_weight = f64::NEG_INFINITY;
+        for candidate_key in 0_u16..=255 {
+            let weight = histogram.iter().enumerate()
+                .map(|(source_byte, count)| *count as f64 * text_likeness_weight((source_byte as u8) ^ candidate_key as u8))
+                .sum::<f64>();
+            if weight > best_weight { best_weight = weight; best_key = candidate_key as u8; }
+        }
+        key.push(best_key);
+    }
+
+    let mut total_weight = 0.0;
+    let mut total_bytes = 0_usize;
+    let mut printable_count = 0_usize;
+    let mut letters_and_spaces_count = 0_usize;
+    for (segment_start, segment) in segments {
+        for (index, byte) in segment.iter().enumerate() {
+            let decoded = *byte ^ key[(segment_start + index) % key_length];
+            total_weight += text_likeness_weight(decoded);
+            total_bytes += 1;
+            if (0x20..=0x7e).contains(&decoded) { printable_count += 1; }
+            if decoded.is_ascii_alphabetic() || decoded == b' ' { letters_and_spaces_count += 1; }
+        }
+    }
+
+    RepeatingKeyXorCandidate {
+        key_length,
+        key_hex: hex::encode(key),
+        text_score: text_likeness_score(total_weight, total_bytes),
+        printable_ascii_percent: if total_bytes == 0 { 0.0 } else { printable_count as f64 * 100.0 / total_bytes as f64 },
+        letters_and_spaces_percent: if total_bytes == 0 { 0.0 } else { letters_and_spaces_count as f64 * 100.0 / total_bytes as f64 },
+    }
+}
+
+fn repeating_key_xor_diagnostics(bytes: &[u8]) -> RepeatingKeyXorDiagnostics {
+    let segments = repeating_key_segments(bytes);
+    let sampled_bytes = segments.iter().map(|(_, segment)| segment.len()).sum();
+    let candidates = (REPEATING_XOR_MIN_KEY_LENGTH..=REPEATING_XOR_MAX_KEY_LENGTH)
+        .map(|key_length| repeating_key_xor_candidate(&segments, key_length)).collect::<Vec<_>>();
+    RepeatingKeyXorDiagnostics {
+        min_key_length: REPEATING_XOR_MIN_KEY_LENGTH,
+        max_key_length: REPEATING_XOR_MAX_KEY_LENGTH,
+        key_lengths_tested: candidates.len(),
+        sampled_bytes,
+        sample_segments: segments.len(),
+        candidates,
+        note: "Exploratory only. Each key byte is selected independently with an ASCII-text heuristic; longer keys can overfit. Candidate keys are not validated and do not establish that the save uses repeating-key XOR.".to_string(),
+    }
+}
+
+fn transform_diagnostics(bytes: &[u8]) -> TransformDiagnostics {
+    TransformDiagnostics {
+        block_profile: block_profile(bytes),
+        single_byte_xor: single_byte_xor_diagnostics(bytes),
+        repeating_key_xor: repeating_key_xor_diagnostics(bytes),
+    }
 }
 
 fn byte_diagnostics(bytes: &[u8]) -> ByteDiagnostics {
@@ -1404,6 +1680,7 @@ fn inspect_vault(app: AppHandle, file_name: String, passphrase: String) -> Resul
             zstd_candidates_overlapping_skipped,
             zstd_skippable_frames: find_zstd_skippable_frames(&bytes),
             zstd_probes,
+            transform_diagnostics: transform_diagnostics(&bytes),
         });
     }
     if inspected.is_empty() {
@@ -1576,6 +1853,56 @@ mod tests {
             state ^= state << 17;
             (state >> 24) as u8
         }).collect()
+    }
+
+
+    #[test]
+    fn block_profile_measures_each_four_kib_chunk_and_partial_tail() {
+        let mut bytes = vec![b'A'; TRANSFORM_BLOCK_BYTES + 17];
+        bytes[TRANSFORM_BLOCK_BYTES..].fill(0);
+        let profile = block_profile(&bytes);
+        assert_eq!(profile.block_size_bytes, 4096);
+        assert_eq!(profile.block_count, 2);
+        assert_eq!(profile.blocks[0].offset_bytes, 0);
+        assert_eq!(profile.blocks[0].size_bytes, 4096);
+        assert_eq!(profile.blocks[0].entropy_bits_per_byte, 0.0);
+        assert_eq!(profile.blocks[0].unique_byte_values, 1);
+        assert_eq!(profile.blocks[1].offset_bytes, 4096);
+        assert_eq!(profile.blocks[1].size_bytes, 17);
+        assert_eq!(profile.blocks[1].zero_byte_percent, 100.0);
+        assert_eq!(profile.min_entropy_bits_per_byte, 0.0);
+        assert_eq!(profile.max_entropy_bits_per_byte, 0.0);
+    }
+
+    #[test]
+    fn single_byte_xor_sweep_identifies_sqlite_magic_fixture() {
+        const KEY: u8 = 0xA5;
+        let mut bytes = b"SQLite format 3\0".to_vec();
+        bytes.extend_from_slice(b"SQLite text fixture with ordinary printable content. ");
+        for byte in &mut bytes { *byte ^= KEY; }
+        let report = single_byte_xor_diagnostics(&bytes);
+        assert_eq!(report.sqlite_magic_xor_key, Some(KEY));
+        assert!(report.top_candidates.iter().any(|candidate| candidate.key_byte == KEY && candidate.sqlite_magic_match));
+        assert_eq!(report.sampled_bytes, bytes.len());
+    }
+
+    #[test]
+    fn repeating_key_xor_checks_every_key_length_from_one_through_32() {
+        let plain = b"the quick brown fox jumps over the lazy dog; the garden is growing. ";
+        let key = b"ICE";
+        let mut bytes = Vec::new();
+        for _ in 0..1600 {
+            for byte in plain { bytes.push(*byte ^ key[bytes.len() % key.len()]); }
+        }
+        let report = repeating_key_xor_diagnostics(&bytes);
+        assert_eq!(report.min_key_length, 1);
+        assert_eq!(report.max_key_length, 32);
+        assert_eq!(report.key_lengths_tested, 32);
+        assert_eq!(report.candidates.len(), 32);
+        assert_eq!(report.candidates[0].key_length, 1);
+        assert_eq!(report.candidates[31].key_length, 32);
+        assert!(report.sampled_bytes <= TRANSFORM_SAMPLE_BYTES);
+        assert!(report.sample_segments >= 1);
     }
 
     #[test]
