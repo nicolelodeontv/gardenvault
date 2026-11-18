@@ -1,0 +1,25 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+const html = await readFile(new URL("../ui/index.html", import.meta.url), "utf8");
+const js = await readFile(new URL("../ui/app.js", import.meta.url), "utf8");
+const css = await readFile(new URL("../ui/app.css", import.meta.url), "utf8");
+
+test("dashboard exposes device discovery and profile capture controls", () => {
+  assert.match(html, /id="refreshDevices"/);
+  assert.match(html, /id="deviceSelect"/);
+  assert.match(html, /id="readProfile"/);
+  assert.match(html, /id="vaultPassphrase"/);
+});
+test("frontend invokes only the fixed native profile commands", () => {
+  assert.match(js, /invoke\("list_devices"\)/);
+  assert.match(js, /invoke\("read_profile"/);
+  assert.doesNotMatch(js, /localStorage|sessionStorage/);
+});
+test("passphrase is cleared after a capture attempt", () => {
+  assert.match(js, /passphraseInput\.value = ""/);
+});
+test("desktop theme defaults to dark mode", () => {
+  assert.match(html, /name="color-scheme" content="dark"/);
+  assert.match(css, /color-scheme:dark/);
+});

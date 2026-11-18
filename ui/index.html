@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <title>GardenVault</title>
+  <link rel="stylesheet" href="./app.css">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand"><div class="brand-mark">G</div><div><strong>GardenVault</strong><small>PROFILE MANAGER</small></div></div>
+    <div class="nav-label">WORKSPACE</div>
+    <button class="nav-item active" type="button"><span>▦</span> Overview</button>
+    <button class="nav-item" type="button"><span>◈</span> Profiles <em>NEW</em></button>
+    <button class="nav-item" type="button"><span>▤</span> Encrypted backups</button>
+    <div class="sidebar-bottom">
+      <div class="privacy-card"><span class="privacy-icon">◉</span><strong>Private by design</strong><p>Profile files are encrypted locally. Nothing is uploaded.</p></div>
+      <div class="version">GardenVault v1.0.0-rc.3</div>
+    </div>
+  </aside>
+  <main class="main">
+    <header class="topbar"><div><div class="eyebrow">LOCAL PROFILE WORKSPACE</div><h1>Overview</h1></div><div class="offline-pill"><span></span> OFFLINE MODE</div></header>
+    <section class="welcome"><div><div class="eyebrow">LDPLAYER INTEGRATION</div><h2>Your Gardenscapes profile,<br><span>securely in one place.</span></h2><p>Detect your emulator, read a safe snapshot, and protect it in your encrypted offline vault.</p></div><div class="welcome-art"><div class="orb"></div><div class="leaf leaf-one"></div><div class="leaf leaf-two"></div></div></section>
+    <section class="section-head"><div><h3>Device connection</h3><p>Connect to your authorized LDPlayer 14 instance.</p></div><button id="refreshDevices" class="button secondary" type="button">↻ Refresh devices</button></section>
+    <section class="panel device-panel">
+      <div class="panel-top"><div class="device-icon">▣</div><div class="device-copy"><strong>LDPlayer emulator</strong><span id="deviceSummary">Checking connected devices…</span></div><div id="connectionBadge" class="status-badge neutral">CHECKING</div></div>
+      <div class="form-grid">
+        <label class="field"><span>ANDROID DEVICE</span><select id="deviceSelect" disabled><option value="">Discovering devices…</option></select></label>
+        <label class="field"><span>VAULT PASSPHRASE</span><input id="vaultPassphrase" type="password" autocomplete="new-password" placeholder="At least 12 characters" maxlength="256"></label>
+      </div>
+      <div class="hint-row"><span class="hint-icon">i</span><span>Close Gardenscapes completely before reading. Root access is required to read its private save directory.</span></div>
+      <div class="action-row"><button id="readProfile" class="button primary" type="button" disabled>◈ Read Profile & Create Encrypted Backup</button><span id="readStatus" class="read-status">No profile captured this session.</span></div>
+    </section>
+    <section class="section-head lower-head"><div><h3>Latest snapshot</h3><p>Metadata only. The save contents remain encrypted.</p></div></section>
+    <section id="resultPanel" class="panel result-panel empty"><div class="empty-icon">◇</div><div><strong>No snapshot yet</strong><p>Connect LDPlayer, enter a vault passphrase, and select Read Profile.</p></div></section>
+    <section class="notice"><span>!</span><div><strong>Editing is not enabled yet</strong><p>The Gardenscapes save format is still under investigation. GardenVault currently captures and encrypts original files without changing game progress.</p></div></section>
+  </main>
+</div>
+</body>
+</html>

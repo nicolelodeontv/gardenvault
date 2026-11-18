@@ -1,5 +1,32 @@
 # GardenVault
 
-GardenVault is a local-first Windows desktop utility for inspecting supported save files, creating encrypted offline backups, and safely capturing Gardenscapes files from an authorized LDPlayer 14 instance. The current RC2 release is a candidate; Gardenscapes currency/item/level editing is not implemented because the save format is not yet verified.
+GardenVault is a local-first Windows desktop utility for reading Gardenscapes profile files from an authorized LDPlayer 14 instance and creating encrypted offline snapshots.
 
-Source and Windows build workflow will be added on a dedicated release-candidate branch. Do not upload game-save files, credentials, signing certificates, or secrets to this repository.
+## v1.0.0-rc.3 MVP
+
+- Detect connected LDPlayer emulators through ADB.
+- Verify the Gardenscapes package and root availability.
+- Read the observed `GameData.db` and `GameData.db.bak` files after the game process exits.
+- Encrypt both files in memory with Argon2id + AES-256-GCM before writing a single `.gvault` file to local app data.
+- Never write into the Gardenscapes game directory.
+- No save data is sent to a cloud service.
+
+## Compatibility limit
+
+The supplied save files have not been identified as standard SQLite. The app currently reports file sizes and SHA-256 hashes; it does not decode or edit coins, items, or level fields. Editing and live Apply remain disabled pending a verified format adapter.
+
+## Build on Windows
+
+Requirements: Node.js 22+, Rust stable with the MSVC target, Visual Studio C++ Build Tools + Windows SDK, and NSIS.
+
+Run `build_windows.bat` from the repository root. The NSIS installer is created under `src-tauri/target/release/bundle/nsis/`. GitHub Actions also builds an unsigned Windows x64 installer and uploads it as an artifact.
+
+## LDPlayer 14
+
+ADB discovery checks `GARDENVAULT_ADB`, then `C:\LDPlayer\LDPlayer14\adb.exe`, then `adb.exe` on PATH. Enable ADB debugging and LDPlayer root access. Close Gardenscapes completely before reading.
+
+## Security
+
+The frontend cannot pass arbitrary shell commands or file paths. Native code uses a fixed ADB command allowlist against the known package and two file names. The passphrase is not saved. No telemetry, cloud sync, account service, plugin server, or automatic update is included in this offline MVP.
+
+See [docs/SECURITY.md](docs/SECURITY.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
