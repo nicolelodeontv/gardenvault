@@ -1580,7 +1580,7 @@ mod tests {
     #[test]
     fn high_ratio_zstd_output_bomb_hits_the_actual_streaming_output_cap() {
         let payload = vec![0_u8; MAX_DECOMPRESSED_BYTES as usize + 1];
-        let frame = make_windowed_zstd_frame(26, &payload);
+        let frame = make_windowed_zstd_frame(24, &payload);
         assert!(frame.len() < 256 * 1024, "high-ratio fixture should be small on disk");
         let probe = probe_zstd_frame(&frame, 0, MAX_DECOMPRESSED_BYTES);
         assert_eq!(probe.status, "limit-hit");
@@ -1590,7 +1590,7 @@ mod tests {
 
     #[test]
     fn oversized_zstd_window_is_a_limit_hit() {
-        let frame = make_windowed_zstd_frame(27, &seeded_bytes(1024 * 1024, 0x7777));
+        let frame = make_windowed_zstd_frame(25, &seeded_bytes(1024 * 1024, 0x7777));
         let probe = probe_zstd_frame(&frame, 0, MAX_DECOMPRESSED_BYTES);
         assert_eq!(probe.status, "limit-hit");
         assert!(probe.decoded.is_none());
@@ -1715,6 +1715,7 @@ mod tests {
         let report = inspect_sqlite_readonly(&bytes).expect("SQLite header");
         assert!(!report.opened_read_only);
         assert_eq!(report.status, "wal-mode-main-file-only-may-be-stale");
+        assert!(report.note.contains("main file only, may be stale"));
         assert!(report.quick_check.is_none());
         assert!(report.note.contains("not replayed"));
     }
