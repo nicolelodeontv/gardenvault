@@ -1646,7 +1646,7 @@ mod tests {
     #[test]
     fn capture_output_parser_preserves_binary_and_rejects_missing_or_incomplete_files() {
         let binary = [0_u8, 0xFF, b'\n', 0x7F];
-        let mut framed = b"__GARDENVAULT_CAPTURE__:4\\n".to_vec();
+        let mut framed = b"__GARDENVAULT_CAPTURE__:4\n".to_vec();
         framed.extend_from_slice(&binary);
         assert_eq!(parse_capture_output("GameData.db", &framed).expect("valid framed bytes"), binary);
 
