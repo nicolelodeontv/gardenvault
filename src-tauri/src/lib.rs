@@ -57,6 +57,8 @@ struct VaultSnapshot {
     captured_at: String,
     #[serde(default)]
     capture_integrity: Option<String>,
+    #[serde(default)]
+    missing_optional_files: Vec<String>,
     files: Vec<VaultFile>,
 }
 
@@ -268,6 +270,7 @@ struct VaultInspection {
     device_serial: String,
     captured_at: String,
     capture_integrity: Option<String>,
+    missing_optional_files: Vec<String>,
     files: Vec<InspectedFile>,
     identical_files: bool,
 }
@@ -1349,6 +1352,7 @@ fn inspect_vault(app: AppHandle, file_name: String, passphrase: String) -> Resul
         return Err("Snapshot metadata is not a supported Gardenscapes capture.".to_string());
     }
     let capture_integrity = snapshot.capture_integrity.clone();
+    let missing_optional_files = snapshot.missing_optional_files.clone();
     let mut decoded_files = Vec::new();
     for file in snapshot.files {
         if !matches!(file.name.as_str(), "GameData.db" | "GameData.db.bak" | "GameData.db-wal") {
@@ -1410,6 +1414,7 @@ fn inspect_vault(app: AppHandle, file_name: String, passphrase: String) -> Resul
         device_serial: snapshot.device_serial,
         captured_at: snapshot.captured_at,
         capture_integrity,
+        missing_optional_files,
         files: inspected,
         identical_files,
     })
@@ -1492,6 +1497,7 @@ fn read_profile(app: AppHandle, serial: String, passphrase: String) -> Result<Re
         device_serial: serial.clone(),
         captured_at: captured_at.clone(),
         capture_integrity: Some("device-stat-sha256-v1".to_string()),
+        missing_optional_files: missing_optional_files.clone(),
         files: vault_files,
     };
     let plaintext = serde_json::to_vec(&payload).map_err(|e| format!("Could not prepare encrypted snapshot: {e}"))?;
