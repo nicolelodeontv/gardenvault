@@ -185,6 +185,7 @@ struct SqliteDiagnostics {
     schema_objects: Vec<String>,
     quick_check: Option<String>,
     wal: Option<SqliteWalDiagnostics>,
+    note: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -407,6 +408,13 @@ fn plxe_header_decoded_size_matches(bytes: &[u8], plxe_offsets: &[usize], zstd_o
     matches
 }
 
+impl SqliteDiagnostics {
+    fn with_note(mut self, note: String) -> Self {
+        self.note = note;
+        self
+    }
+}
+
 fn inspect_sqlite_wal(wal: Option<&[u8]>) -> SqliteWalDiagnostics {
     let Some(bytes) = wal else {
         return SqliteWalDiagnostics {
@@ -492,6 +500,7 @@ fn inspect_sqlite_readonly(bytes: &[u8]) -> Option<SqliteDiagnostics> {
             schema_objects: Vec::new(),
             quick_check: None,
             wal: Some(inspect_sqlite_wal(None)),
+            note: "Database header indicates WAL journal mode; WAL pages are inspected separately and not replayed.".to_string(),
         });
     }
 
@@ -505,6 +514,7 @@ fn inspect_sqlite_readonly(bytes: &[u8]) -> Option<SqliteDiagnostics> {
                 schema_objects: Vec::new(),
                 quick_check: None,
                 wal: Some(inspect_sqlite_wal(None)),
+                note: String::new(),
             }.with_note(format!("Could not create in-memory SQLite connection: {error}")));
         }
     };
@@ -516,6 +526,7 @@ fn inspect_sqlite_readonly(bytes: &[u8]) -> Option<SqliteDiagnostics> {
             schema_objects: Vec::new(),
             quick_check: None,
             wal: Some(inspect_sqlite_wal(None)),
+            note: String::new(),
         }.with_note(format!("SQLite rejected the read-only in-memory database image: {error}")));
     }
 
@@ -539,6 +550,7 @@ fn inspect_sqlite_readonly(bytes: &[u8]) -> Option<SqliteDiagnostics> {
         schema_objects,
         quick_check,
         wal: Some(inspect_sqlite_wal(None)),
+        note: "SQLite image was opened in memory with read-only deserialization; schema names and quick_check were queried without writes.".to_string(),
     })
 }
 
@@ -825,13 +837,27 @@ fn list_devices() -> Result<Vec<DeviceInfo>, String> {
 }
 
 fn root_cat_command(file_name: &str) -> Result<String, String> {
-    if !matches!(file_name, "GameData.db" | "GameData.db.bak") {
+    if !matches!(file_name, "GameData.db" | "GameData.db.bak" | "GameData.db-wal") {
         return Err("Unsupported Gardenscapes save file.".to_string());
     }
     let remote_path = format!("{GAME_DATA_DIR}/{file_name}");
     // Keep the whole command as one quoted argument to su -c. Without these
     // quotes, some LDPlayer adb/su combinations parse the path as a target UID.
     Ok(format!("su -c 'cat {remote_path}'"))
+}
+
+fn root_test_file_command(file_name: &str) -> Result<String, String> {
+    if file_name != GAME_WAL_FILE {
+        return Err("Unsupported optional Gardenscapes companion file.".to_string());
+    }
+    let remote_path = format!("{GAME_DATA_DIR}/{file_name}");
+    Ok(format!("su -c 'test -f {remote_path}'"))
+}
+
+fn remote_file_exists(adb: &Path, serial: &str, file_name: &str) -> Result<bool, String> {
+    let command = root_test_file_command(file_name)?;
+    let output = run_adb_for_device(adb, serial, &["exec-out", &command])?;
+    Ok(output.status.success())
 }
 
 fn capture_file(adb: &Path, serial: &str, file_name: &str) -> Result<Vec<u8>, String> {
@@ -966,7 +992,7 @@ fn inspect_vault(app: AppHandle, file_name: String, passphrase: String) -> Resul
     }
     let mut inspected = Vec::new();
     for file in snapshot.files {
-        if !matches!(file.name.as_str(), "GameData.db" | "GameData.db.bak") {
+        if !matches!(file.name.as_str(), "GameData.db" | "GameData.db.bak" | "GameData.db-wal") {
             return Err("Snapshot contains an unexpected file entry.".to_string());
         }
         let bytes = BASE64.decode(&file.content_base64)
@@ -1029,6 +1055,17 @@ fn read_profile(app: AppHandle, serial: String, passphrase: String) -> Result<Re
         file_infos.push(FileInfo { name: file_name.to_string(), size_bytes: bytes.len(), sha256: digest.clone() });
         vault_files.push(VaultFile {
             name: file_name.to_string(),
+            size_bytes: bytes.len(),
+            sha256: digest,
+            content_base64: BASE64.encode(&bytes),
+        });
+    }
+    if remote_file_exists(&adb, &serial, GAME_WAL_FILE)? {
+        let bytes = capture_file(&adb, &serial, GAME_WAL_FILE)?;
+        let digest = hash_hex(&bytes);
+        file_infos.push(FileInfo { name: GAME_WAL_FILE.to_string(), size_bytes: bytes.len(), sha256: digest.clone() });
+        vault_files.push(VaultFile {
+            name: GAME_WAL_FILE.to_string(),
             size_bytes: bytes.len(),
             sha256: digest,
             content_base64: BASE64.encode(&bytes),
