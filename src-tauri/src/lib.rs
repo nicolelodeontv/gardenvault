@@ -1233,19 +1233,6 @@ fn verify_wal_capture_unchanged(before: &[u8], captured: &[u8], after: &[u8]) ->
     }
 }
 
-fn capture_file(adb: &Path, serial: &str, file_name: &str) -> Result<Vec<u8>, String> {
-    let command = root_cat_command(file_name)?;
-    // exec-out avoids a PTY so bytes are captured without terminal conversion.
-    let output = run_adb_for_device(adb, serial, &["exec-out", &command])?;
-    // Validate the framed response before accepting any bytes. In particular,
-    // an Android cat error message must never become a "successful" WAL file.
-    let bytes = parse_capture_output(file_name, &output.stdout)?;
-    if !output.status.success() {
-        return Err(format!("Could not read {file_name}: {}", String::from_utf8_lossy(&output.stderr).trim()));
-    }
-    Ok(bytes)
-}
-
 #[tauri::command]
 fn list_vaults(app: AppHandle) -> Result<Vec<VaultListItem>, String> {
     let vault_dir = app_vault_dir(&app)?;
