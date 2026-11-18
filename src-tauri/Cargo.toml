@@ -1,6 +1,6 @@
 [package]
 name = "gardenvault"
-version = "1.0.0-rc.11"
+version = "1.0.0-rc.12"
 description = "Local-first Gardenscapes profile backup utility"
 edition = "2021"
 
