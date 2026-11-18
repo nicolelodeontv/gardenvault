@@ -17,7 +17,9 @@ test("frontend invokes only the fixed native profile commands", () => {
   assert.match(js, /invoke\("list_vaults"\)/);
   assert.match(js, /invoke\("export_vault"/);
   assert.match(js, /invoke\("inspect_vault"/);
-  assert.match(js, /entropyAssessment/);\n  assert.match(js, /zstdProbes/);\n  assert.match(js, /plxeHeaderWords/);
+  assert.match(js, /entropyAssessment/);
+  assert.match(js, /zstdProbes/);
+  assert.match(js, /plxeHeaderWords/);
   assert.doesNotMatch(js, /localStorage|sessionStorage/);
 });
 test("encrypted backup browser exposes refresh and export controls", () => {
@@ -27,7 +29,12 @@ test("encrypted backup browser exposes refresh and export controls", () => {
   assert.match(js, /detectedFormat/);
   assert.match(js, /entropyBitsPerByte/);
   assert.match(js, /printableAsciiPercent/);
-  assert.match(js, /embeddedSignatures/);\n  assert.match(js, /header256EntropyBitsPerByte/);\n  assert.match(js, /tail256EntropyBitsPerByte/);\n  assert.match(js, /sizeMod4096/);\n  assert.match(js, /tailHex/);\n  assert.match(js, /frameContentSizeBytes/);
+  assert.match(js, /embeddedSignatures/);
+  assert.match(js, /header256EntropyBitsPerByte/);
+  assert.match(js, /tail256EntropyBitsPerByte/);
+  assert.match(js, /sizeMod4096/);
+  assert.match(js, /tailHex/);
+  assert.match(js, /frameContentSizeBytes/);
   assert.match(js, /data-file-name/);
 });
 test("passphrase is cleared after a capture attempt", () => {
