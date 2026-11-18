@@ -1670,7 +1670,7 @@ mod tests {
 
     #[test]
     fn sqlite_images_are_opened_read_only_and_wal_headers_are_checked() {
-        let source = Connection::open_in_memory().expect("open synthetic SQLite database");
+        let mut source = Connection::open_in_memory().expect("open synthetic SQLite database");
         source.execute_batch("CREATE TABLE test_items(id INTEGER PRIMARY KEY, value TEXT); INSERT INTO test_items(value) VALUES ('unchanged');")
             .expect("create synthetic schema");
         let serialized = source.serialize(rusqlite::MAIN_DB).expect("serialize synthetic SQLite");
@@ -1716,7 +1716,7 @@ mod tests {
 
     #[test]
     fn sqlite_wal_mode_image_is_not_opened_without_replaying_wal() {
-        let source = Connection::open_in_memory().expect("open SQLite database");
+        let mut source = Connection::open_in_memory().expect("open SQLite database");
         source.execute_batch("CREATE TABLE t(value INTEGER);").expect("create table");
         let serialized = source.serialize(rusqlite::MAIN_DB).expect("serialize");
         let mut bytes = serialized.to_vec();
