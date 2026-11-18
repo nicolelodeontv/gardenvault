@@ -768,7 +768,7 @@ fn inspect_vault(app: AppHandle, file_name: String, passphrase: String) -> Resul
     if inspected.is_empty() {
         return Err("Snapshot contains no save files.".to_string());
     }
-    let identical_files = inspected.len() > 1 && inspected.iter().all(|f| f.sha256 == inspected[0].sha256);
+    let identical_files = inspected.len() > 1 && inspected.iter().all(|f| f.diagnostics.sha256 == inspected[0].diagnostics.sha256);
     Ok(VaultInspection {
         device_serial: snapshot.device_serial,
         captured_at: snapshot.captured_at,
@@ -957,7 +957,7 @@ mod tests {
         let first_payload_length = (bytes.len() - first_offset) as u32;
         bytes[4..8].copy_from_slice(&first_payload_length.to_le_bytes());
 
-        let (_, header_words, decoded_size_matches, skipped, probes) = inspect_bytes(&bytes);
+        let (_, header_words, _decoded_size_matches, skipped, probes) = inspect_bytes(&bytes);
         assert_eq!(find_signature_offsets(&bytes, ZSTD_MAGIC), vec![first_offset, second_offset]);
         assert_eq!(probes.len(), 2);
         assert_eq!(skipped, 0);
