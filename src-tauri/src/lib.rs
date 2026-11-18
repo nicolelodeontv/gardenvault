@@ -14,8 +14,10 @@ const GAME_DATA_DIR: &str = "/data/user/0/com.playrix.gardenscapes/Documents";
 const GAME_WAL_FILE: &str = "GameData.db-wal";
 const MAX_SAVE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_VAULT_BYTES: u64 = (MAX_SAVE_BYTES as u64) * 4 + 2 * 1024 * 1024;
-const MAX_DECOMPRESSED_BYTES: u64 = 40 * 1024 * 1024;
+const MAX_DECOMPRESSED_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_ZSTD_WINDOW_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_DECOMPRESSOR_HEADROOM_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_DECOMPRESSOR_WORKING_SET_BYTES: u64 = 64 * 1024 * 1024;
 const SQLITE_QUERY_BUDGET_MS: u64 = 500;
 const ZSTD_SKIPPABLE_MAGIC_BASE: u32 = 0x184D_2A50;
 const MAX_ZSTD_PROBES: usize = 32;
@@ -1266,11 +1268,6 @@ fn read_profile(app: AppHandle, serial: String, passphrase: String) -> Result<Re
             "Capture consistency check failed: GameData.db changed while GameData.db-wal was being captured. No snapshot was saved; keep Gardenscapes closed and retry.".to_string()
         })?;
 
-        let process_after = run_adb_for_device(&adb, &serial, &["shell", "pidof", GAME_PACKAGE])?;
-        if !String::from_utf8_lossy(&process_after.stdout).trim().is_empty() {
-            return Err("Gardenscapes started during backup capture. No snapshot was saved; close the game and retry.".to_string());
-        }
-
         file_infos.push(FileInfo { name: GAME_WAL_FILE.to_string(), size_bytes: wal_bytes.len(), sha256: wal_digest.clone() });
         vault_files.push(VaultFile {
             name: GAME_WAL_FILE.to_string(),
@@ -1278,6 +1275,11 @@ fn read_profile(app: AppHandle, serial: String, passphrase: String) -> Result<Re
             sha256: wal_digest,
             content_base64: BASE64.encode(&wal_bytes),
         });
+    }
+
+    let process_after = run_adb_for_device(&adb, &serial, &["shell", "pidof", GAME_PACKAGE])?;
+    if !String::from_utf8_lossy(&process_after.stdout).trim().is_empty() {
+        return Err("Gardenscapes started during backup capture. No snapshot was saved; close the game and retry.".to_string());
     }
 
     let payload = VaultSnapshot {
@@ -1363,6 +1365,16 @@ mod tests {
             state ^= state << 17;
             (state >> 24) as u8
         }).collect()
+    }
+
+    #[test]
+    fn nominal_decompression_memory_budget_includes_sqlite_copy_and_decoder_headroom() {
+        let peak_components = (MAX_DECOMPRESSED_BYTES * 2)
+            + MAX_ZSTD_WINDOW_BYTES
+            + MAX_DECOMPRESSOR_HEADROOM_BYTES;
+        assert!(peak_components <= MAX_DECOMPRESSOR_WORKING_SET_BYTES);
+        assert_eq!(peak_components, MAX_DECOMPRESSOR_WORKING_SET_BYTES);
+        assert!(MAX_DECOMPRESSED_BYTES < 64 * 1024 * 1024);
     }
 
     #[test]
