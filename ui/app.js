@@ -104,6 +104,7 @@ function renderVaults(vaults) {
             const frameSize = probe.compressedFrameSizeBytes == null ? "unknown" : formatBytes(probe.compressedFrameSizeBytes);
             const declared = probe.frameContentSizeBytes == null ? "not declared" : formatBytes(probe.frameContentSizeBytes);
             const trailing = probe.trailingBytesAfterFrame == null ? "unknown" : formatBytes(probe.trailingBytesAfterFrame);
+            const observed = probe.observedOutputBytes == null ? "none (no accepted output)" : formatBytes(probe.observedOutputBytes);
             const decoded = probe.decoded
               ? `Decoded output: ${formatBytes(probe.decoded.sizeBytes)} · ${probe.decoded.detectedFormat}
 Decoded SHA-256: ${probe.decoded.sha256}
@@ -112,7 +113,7 @@ Decoded entropy: whole ${Number(probe.decoded.entropyBitsPerByte).toFixed(3)} ·
 Decoded signatures: ${(probe.decoded.embeddedSignatures || []).join(", ")}`
               : "";
             return `Zstandard @ 0x${Number(probe.offset).toString(16).toUpperCase()}: ${probe.status}
-Frame size: ${frameSize} · declared output: ${declared} · trailing bytes: ${trailing}
+Frame size: ${frameSize} · declared output: ${declared} · observed output: ${observed} · trailing bytes: ${trailing}
 ${probe.note}
 ${decoded}`;
           }).join("\n\n") || "No Zstandard candidates found";
@@ -129,7 +130,7 @@ PLXE little-endian words:
   ${headerWords}
 PLXE words matching decoded sizes:
   ${decodedSizeMatches}
-Zstandard probes: ${file.zstdCandidatesAttempted}/${file.zstdCandidatesTotal} attempted · ${file.zstdCandidatesSkipped} skipped by safety cap
+Zstandard candidates: ${file.zstdCandidatesAttempted} attempted / ${file.zstdCandidatesTotal} signatures · ${file.zstdCandidatesSkipped} skipped by 32-attempt cap · ${file.zstdCandidatesOverlappingSkipped} nested/overlapping signatures skipped
 ${zstd}`;
         }).join("\n\n");        status.textContent = `${details}${report.identicalFiles ? " · Both captured files are identical." : ""}`;
         status.className = "vault-row-status success";
