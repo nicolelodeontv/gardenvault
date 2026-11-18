@@ -416,6 +416,8 @@ fn plxe_header_decoded_size_matches(bytes: &[u8], plxe_offsets: &[usize], zstd_o
             ]) as usize;
             for (frame_offset, decoded_size) in &decoded_frames {
                 if value == *decoded_size {
+                    // Byte offsets are relative to the PLXE magic itself:
+                    // word 1 starts at +0x04, word 2 at +0x08, etc.
                     let word_index = ((field_offset - header_start) / 4) + 1;
                     matches.push(format!(
                         "PLXE@0x{plxe_offset:X} word {word_index} (+0x{:02X}) equals decoded size {} from Zstandard@0x{frame_offset:X}",
@@ -1688,9 +1690,17 @@ mod tests {
             Some(original.len()),
             "successful frame diagnostics should retain the actual decoded byte count"
         );
+        let fixture_header = hex::encode(&bytes[..bytes.len().min(32)]);
         assert!(
-            decoded_matches.iter().any(|word| word.contains("+0x08 equals decoded size")),
-            "decoded-size field comparison missing; header_words={header_words:?}, decoded_matches={decoded_matches:?}, decoded={:?}",
+            decoded_matches.iter().any(|word| {
+                word == &format!(
+                    "PLXE@0x0 word 2 (+0x08) equals decoded size {} from Zstandard@0x{:X}",
+                    original.len(),
+                    frame_offset
+                )
+            }),
+            "expected PLXE word at byte offset +0x08 to match the actual decoded length; first_bytes={fixture_header}, header_words={header_words:?}, decoded_matches={decoded_matches:?}, probe_status={}, decoded_length={:?}",
+            probes[0].status,
             probes[0].decoded.as_ref().map(|decoded| decoded.size_bytes)
         );
     }
