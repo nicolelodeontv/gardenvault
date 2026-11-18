@@ -954,8 +954,7 @@ mod tests {
         bytes.extend_from_slice(b"separator");
         let second_offset = bytes.len();
         bytes.extend_from_slice(&second);
-        let first_payload_length = (bytes.len() - first_offset) as u32;
-        bytes[4..8].copy_from_slice(&first_payload_length.to_le_bytes());
+        bytes[4..8].copy_from_slice(&(first.len() as u32).to_le_bytes());
 
         let (_, header_words, _decoded_size_matches, skipped, probes) = inspect_bytes(&bytes);
         assert_eq!(find_signature_offsets(&bytes, ZSTD_MAGIC), vec![first_offset, second_offset]);
@@ -981,7 +980,7 @@ mod tests {
         assert_eq!(probes.len(), 1);
         assert_eq!(probes[0].offset, frame_offset);
         assert_eq!(probes[0].status, "decoded-cleanly");
-        assert!(header_words.iter().any(|word| word.contains("matches bytes from Zstandard candidate to EOF")));
+        assert!(header_words.iter().any(|word| word.contains("matches compressed Zstandard frame length")));
         assert!(decoded_matches.iter().any(|word| word.contains("+0x08 equals decoded size")));
     }
 
