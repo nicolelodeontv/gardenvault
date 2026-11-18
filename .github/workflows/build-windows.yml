@@ -38,15 +38,49 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
           components: rustfmt
-      - name: Install NSIS
+      - name: Install and expose NSIS
         shell: pwsh
         run: |
-          if (-not (Get-Command makensis.exe -ErrorAction SilentlyContinue)) {
+          $ErrorActionPreference = 'Stop'
+          $candidateDirs = @(
+            (Join-Path ${env:ProgramFiles(x86)} 'NSIS'),
+            (Join-Path $env:ProgramFiles 'NSIS'),
+            (Join-Path $env:ProgramData 'chocolatey/bin')
+          ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+
+          $makensis = Get-Command makensis.exe -ErrorAction SilentlyContinue
+          if (-not $makensis) {
             choco install nsis --no-progress -y
+            $candidateDirs = @(
+              (Join-Path ${env:ProgramFiles(x86)} 'NSIS'),
+              (Join-Path $env:ProgramFiles 'NSIS'),
+              (Join-Path $env:ProgramData 'chocolatey/bin')
+            ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+            foreach ($dir in $candidateDirs) {
+              if (Test-Path -LiteralPath (Join-Path $dir 'makensis.exe')) {
+                $dir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+                $env:PATH = "$dir;$env:PATH"
+                break
+              }
+            }
           }
-          if (-not (Get-Command makensis.exe -ErrorAction SilentlyContinue)) {
-            throw 'NSIS is required for the Windows installer.'
+
+          $makensis = Get-Command makensis.exe -ErrorAction SilentlyContinue
+          if (-not $makensis) {
+            foreach ($dir in $candidateDirs) {
+              $exe = Join-Path $dir 'makensis.exe'
+              if (Test-Path -LiteralPath $exe) {
+                $dir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+                $env:PATH = "$dir;$env:PATH"
+                $makensis = Get-Command makensis.exe -ErrorAction SilentlyContinue
+                break
+              }
+            }
           }
+          if (-not $makensis) {
+            throw 'NSIS installation succeeded or was attempted, but makensis.exe could not be located.'
+          }
+          & $makensis.Source /VERSION
       - name: Install npm dependencies
         run: npm install --no-audit --no-fund
       - name: Run frontend tests
