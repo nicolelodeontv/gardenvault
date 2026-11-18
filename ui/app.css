@@ -5,3 +5,5 @@
 .vault-tools{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.vault-tools label{font-size:11px;color:var(--muted);font-weight:700;letter-spacing:.08em}.vault-tools input{width:210px;min-width:150px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px;color:var(--text);font:inherit}.vault-row-actions{flex-wrap:wrap}.vault-row-status{max-width:360px;overflow-wrap:anywhere}
 
 .vault-row-status{white-space:pre-wrap;line-height:1.55}
+
+.vault-row-status{max-width:700px;min-width:0;font-size:10px;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere}
