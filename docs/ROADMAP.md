@@ -13,6 +13,11 @@
 - [x] Compare PLXE u32 fields against both compressed payload lengths and decoded frame output sizes
 - [x] Share a 64 MiB decompression budget across all candidate frames in each file
 - [x] Cap Zstandard back-reference windows at 64 MiB
+- [x] Distinguish false magic, incomplete frames, decode failures, size mismatches, and resource-limit hits
+- [x] Skip nested/overlapping frame signatures without skipping the next frame at a true frame boundary
+- [x] Add 256 deterministic randomized scanner/decoder wrapper cases
+- [x] Open SQLite images read-only in memory and run schema/quick-check queries
+- [x] Capture the fixed companion WAL file if present and inspect its header/frame layout without replay
 - [x] Keep all inspection read-only and in memory, with bounded decompression output
 
 ## Next milestones
