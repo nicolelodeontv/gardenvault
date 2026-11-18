@@ -5,7 +5,7 @@ GardenVault is a local-first Windows desktop utility for reading Gardenscapes pr
 ## v1.0.0-rc.8 — Read-only binary forensics
 
 - Detect connected LDPlayer emulators through ADB and verify the Gardenscapes package and root availability.
-- Capture `GameData.db` and `GameData.db.bak` after confirming the game process is stopped. If `GameData.db-wal` exists, capture it too and hash the main database immediately before and after the WAL read; reject the snapshot if the main-file hash changes. This detects a torn pair but is not a filesystem-atomic snapshot.
+- Capture `GameData.db` and `GameData.db.bak` only after confirming the game process is stopped. GardenVault does not force-stop the game; close it manually so its save can finish. If `GameData.db-wal` exists, compare main-database hashes before/after the WAL capture and compare WAL hashes from reads immediately before and after the selected WAL snapshot; reject the snapshot if either file changes. This is a consistency guard, not a filesystem-atomic snapshot.
 - Encrypt snapshots locally with Argon2id + AES-256-GCM and preserve SHA-256 integrity metadata.
 - Browse encrypted snapshots and export byte-identical encrypted copies through the Windows Save As dialog.
 - Decrypt a selected snapshot only in memory after passphrase entry and verify embedded file size and SHA-256.
@@ -15,11 +15,11 @@ GardenVault is a local-first Windows desktop utility for reading Gardenscapes pr
 - Attempt bounded streaming Zstandard decoding at candidate offsets. Report explicit statuses (`signature-only`, `incomplete`, `decode-failed`, `limit-hit`, `decoded-size-matches`, and `decoded-size-mismatch`), frame offsets, declared/observed sizes, compressed frame sizes, trailing bytes, and diagnostics for complete decoded output.
 - Skip candidate magic that falls inside an already measured frame, while still attempting a new frame exactly at the prior frame boundary.
 - Report Zstandard skippable frames (magic range `0x184D2A50`–`0x184D2A5F`) separately; they are metadata frames and do not count as normal decode candidates.
-- Stream decoded output through a 32 KiB scratch buffer and grow the retained output only as bytes arrive. The nominal 64 MiB active decompression/SQLite working-set budget is split into 20 MiB retained output, up to 20 MiB for SQLite’s own read-only deserialization copy, a 16 MiB Zstandard window cap, and 8 MiB decoder/scratch headroom. Source snapshot buffers are already resident separately and are not included in this per-frame working-set estimate. The cumulative output cap and 32-real-attempt limit apply per file. Inspection never extracts files to disk or writes to the game directory.
+- Reserve a fixed 20 MiB retained-output ceiling and stream through a 32 KiB scratch buffer; reject a declared Zstandard window above 16 MiB before creating the decoder or allocating the output buffer. The nominal 64 MiB *per-frame active decompression/SQLite working-set estimate* is 20 MiB retained output + up to 20 MiB for SQLite’s read-only deserialization copy + a 16 MiB Zstandard window + 8 MiB decoder/scratch headroom. The output Vec remains alive while SQLite diagnostics run, so the two 20 MiB copies can coexist. This is not a process-wide memory cap: encrypted vault bytes, decrypted snapshot JSON, parsed Base64 strings, decoded source files, and other process/allocator overhead remain resident outside the estimate. The cumulative output cap and 32-real-attempt limit apply per file. Inspection never extracts files to disk or writes to the game directory.
 
 ## Compatibility limits
 
-The supplied `GameData.db` has not yet been confirmed as SQLite, a PLXE container, or any other known format. SQLite inspection only runs after the standard SQLite header is detected. Defensive mode, query-only mode, disabled extension loading, `trusted_schema=OFF`, and a 500 ms SQLite progress-handler budget are applied. If either SQLite header format-version byte (18 or 19) is `2`, the report says “WAL-mode database, main file only, may be stale” and skips `quick_check`. A PLXE/Zstandard signature match is only a candidate until the frame validates and decompresses cleanly. High entropy alone does not prove encryption because compressed data can also have high entropy.
+The supplied `GameData.db` has not yet been confirmed as SQLite, a PLXE container, or any other known format. SQLite inspection only runs after the standard SQLite header is detected. Defensive mode, query-only mode, disabled extension loading, `trusted_schema=OFF`, and a 500 ms SQLite progress-handler budget are applied. If `quick_check` is interrupted by that budget, the report is “inconclusive (time budget)” rather than a failed/corrupt check. If either SQLite header format-version byte (18 or 19) is `2`, the report says “WAL-mode database, main file only, may be stale” and skips `quick_check`. A PLXE/Zstandard signature match is only a candidate until the frame validates and decompresses cleanly. High entropy alone does not prove encryption because compressed data can also have high entropy.
 
 Even a successfully decoded local database would not prove it is the authoritative record for coins, boosters, or level progress. Gardenscapes can synchronize progress with Playrix services. Editing, restore-to-game, and live Apply remain disabled until the file structure, integrity rules, and relationship to server-synced progress are independently verified.
 
@@ -39,7 +39,7 @@ Run `build_windows.bat` from the repository root. GitHub Actions builds an unsig
 
 ## LDPlayer 14
 
-ADB discovery checks `GARDENVAULT_ADB`, then `C:\LDPlayer\LDPlayer14\adb.exe`, then `adb.exe` on PATH. Enable ADB debugging and LDPlayer root access. Close Gardenscapes completely before reading.
+ADB discovery checks `GARDENVAULT_ADB`, then `C:\LDPlayer\LDPlayer14\adb.exe`, then `adb.exe` on PATH. Enable ADB debugging and LDPlayer root access. Close Gardenscapes completely before reading; GardenVault verifies that the process is stopped before and after capture but will not force-stop it.
 
 ## Security
 

@@ -19,6 +19,7 @@ const MAX_ZSTD_WINDOW_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_DECOMPRESSOR_HEADROOM_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_DECOMPRESSOR_WORKING_SET_BYTES: u64 = 64 * 1024 * 1024;
 const SQLITE_QUERY_BUDGET_MS: u64 = 500;
+const SQLITE_TIMEOUT_LABEL: &str = "inconclusive (time budget)";
 const ZSTD_SKIPPABLE_MAGIC_BASE: u32 = 0x184D_2A50;
 const MAX_ZSTD_PROBES: usize = 32;
 const ZSTD_MAGIC: &[u8; 4] = b"\x28\xb5\x2f\xfd";
@@ -511,6 +512,18 @@ fn inspect_sqlite_wal(wal: Option<&[u8]>) -> SqliteWalDiagnostics {
     }
 }
 
+fn sqlite_query_was_interrupted(error: &rusqlite::Error) -> bool {
+    error.to_string().to_ascii_lowercase().contains("interrupt")
+}
+
+fn sqlite_query_error_status(error: &rusqlite::Error) -> &'static str {
+    if sqlite_query_was_interrupted(error) {
+        "inspection-time-limit"
+    } else {
+        "quick-check-error"
+    }
+}
+
 fn sqlite_diagnostics_failure(status: &str, note: String) -> SqliteDiagnostics {
     SqliteDiagnostics {
         opened_read_only: false,
@@ -584,18 +597,24 @@ fn inspect_sqlite_readonly(bytes: &[u8]) -> Option<SqliteDiagnostics> {
     let quick_check_result = connection.query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0));
     let quick_check = quick_check_result.as_ref().ok().cloned();
     if let Err(error) = quick_check_result {
-        let timed_out = error.to_string().to_ascii_lowercase().contains("interrupt");
+        let timed_out = sqlite_query_was_interrupted(&error);
         return Some(SqliteDiagnostics {
             opened_read_only: true,
-            status: if timed_out { "inspection-time-limit" } else { "quick-check-failed" }.to_string(),
+            status: sqlite_query_error_status(&error).to_string(),
             sqlite_version,
             schema_objects: Vec::new(),
-            quick_check: None,
+            quick_check: if timed_out { Some(SQLITE_TIMEOUT_LABEL.to_string()) } else { None },
             wal: Some(inspect_sqlite_wal(None)),
-            note: format!(
-                "Read-only SQLite inspection stopped during quick_check ({} ms budget): {error}. No database writes were permitted.",
-                SQLITE_QUERY_BUDGET_MS
-            ),
+            note: if timed_out {
+                format!(
+                    "Read-only SQLite quick_check was inconclusive (time budget): the {} ms inspection budget expired ({error}). This is not evidence of corruption; no database writes were permitted.",
+                    SQLITE_QUERY_BUDGET_MS
+                )
+            } else {
+                format!(
+                    "Read-only SQLite inspection stopped during quick_check with a query error: {error}. No database writes were permitted."
+                )
+            },
         });
     }
 
@@ -610,7 +629,7 @@ fn inspect_sqlite_readonly(bytes: &[u8]) -> Option<SqliteDiagnostics> {
                     match row {
                         Ok(name) => schema_objects.push(name.chars().take(120).collect()),
                         Err(error) => {
-                            schema_timed_out = error.to_string().to_ascii_lowercase().contains("interrupt");
+                            schema_timed_out = sqlite_query_was_interrupted(&error);
                             break;
                         }
                     }
@@ -736,6 +755,28 @@ fn is_zstd_limit_error(message: &str) -> bool {
         || lower.contains("maximum window")
 }
 
+fn zstd_declared_window_size(payload: &[u8]) -> Option<u64> {
+    if payload.get(..4)? != &ZSTD_MAGIC[..] {
+        return None;
+    }
+    let descriptor = *payload.get(4)?;
+    // Bits 4 and 3 are reserved in the frame header descriptor.
+    if descriptor & 0x18 != 0 {
+        return None;
+    }
+    let single_segment = descriptor & 0x20 != 0;
+    if single_segment {
+        // A single-segment frame's window is its declared content size.
+        return zstd_safe::get_frame_content_size(payload).ok().flatten();
+    }
+
+    let window_descriptor = *payload.get(5)?;
+    let window_log = 10_u32.checked_add((window_descriptor >> 3) as u32)?;
+    let window_base = 1_u64.checked_shl(window_log)?;
+    let window_add = (window_base >> 3).checked_mul((window_descriptor & 0x07) as u64)?;
+    window_base.checked_add(window_add)
+}
+
 fn probe_zstd_frame(bytes: &[u8], offset: usize, remaining_budget: u64) -> ZstdProbe {
     let Some(payload) = bytes.get(offset..) else {
         return ZstdProbe {
@@ -747,6 +788,21 @@ fn probe_zstd_frame(bytes: &[u8], offset: usize, remaining_budget: u64) -> ZstdP
 
     let output_limit = MAX_DECOMPRESSED_BYTES.min(remaining_budget);
     let declared_size = zstd_safe::get_frame_content_size(payload).ok().flatten();
+    if let Some(declared_window_size) = zstd_declared_window_size(payload) {
+        if declared_window_size > MAX_ZSTD_WINDOW_BYTES {
+            return ZstdProbe {
+                offset, status: "limit-hit".to_string(), frame_content_size_bytes: declared_size,
+                compressed_frame_size_bytes: None, trailing_bytes_after_frame: None,
+                observed_output_bytes: None,
+                note: format!(
+                    "Declared Zstandard window is {} MiB, above the {} MiB ceiling; rejected before decoder creation and output-buffer allocation.",
+                    declared_window_size / (1024 * 1024),
+                    MAX_ZSTD_WINDOW_BYTES / (1024 * 1024)
+                ),
+                decoded: None,
+            };
+        }
+    }
     let frame_size = match zstd_safe::find_frame_compressed_size(payload) {
         Ok(size) => size,
         Err(error_code) => {
@@ -811,12 +867,15 @@ fn probe_zstd_frame(bytes: &[u8], offset: usize, remaining_budget: u64) -> ZstdP
             compressed_frame_size_bytes: Some(frame_size),
             trailing_bytes_after_frame: Some(payload.len() - frame_size),
             observed_output_bytes: None,
-            note: format!("The Zstandard decoder could not apply its bounded 16 MiB window limit: {error}"),
+            note: format!("The Zstandard decoder could not apply its bounded 16 MiB window limit before output-buffer allocation: {error}"),
             decoded: None,
         };
     }
 
     // Reserve only the fixed safety ceiling, never the frame's declared size.
+    // The output Vec remains alive while byte_diagnostics inspects it. If it is
+    // SQLite, deserialize_read_exact may hold a second SQLite-owned copy at
+    // the same time; that overlap is why the nominal budget counts 2 x 20 MiB.
     // One allocation avoids transient old+new Vec buffers during repeated growth.
     let mut output = Vec::new();
     if output.try_reserve_exact(output_limit as usize).is_err() {
@@ -1039,6 +1098,17 @@ fn verify_main_capture_unchanged(before: &[u8], after: &[u8]) -> Result<(), Stri
     }
 }
 
+fn verify_wal_capture_unchanged(before: &[u8], captured: &[u8], after: &[u8]) -> Result<(), String> {
+    let before_hash = hash_hex(before);
+    let captured_hash = hash_hex(captured);
+    let after_hash = hash_hex(after);
+    if before_hash == captured_hash && captured_hash == after_hash {
+        Ok(())
+    } else {
+        Err("GameData.db-wal changed across its capture read.".to_string())
+    }
+}
+
 fn capture_file(adb: &Path, serial: &str, file_name: &str) -> Result<Vec<u8>, String> {
     let command = root_cat_command(file_name)?;
     // exec-out avoids a PTY so bytes are captured without terminal conversion.
@@ -1200,7 +1270,7 @@ fn inspect_vault(app: AppHandle, file_name: String, passphrase: String) -> Resul
                 for probe in &mut zstd_probes {
                     if let Some(decoded_sqlite) = probe.decoded.as_mut().and_then(|decoded| decoded.sqlite_database.as_mut()) {
                         decoded_sqlite.wal = Some(wal_diagnostics.clone());
-                        decoded_sqlite.note.push_str(if wal_bytes.is_some() {
+                        decoded_sqlite.note.push_str(if wal_diagnostics.present {
                             " A companion WAL was captured and checked separately; its pages were not replayed."
                         } else {
                             " No companion WAL was present in this snapshot."
@@ -1287,7 +1357,14 @@ fn read_profile(app: AppHandle, serial: String, passphrase: String) -> Result<Re
             "Capture consistency check failed: GameData.db changed before WAL capture. Keep Gardenscapes closed and retry.".to_string()
         })?;
 
+        // Read the WAL immediately before and after the selected snapshot too.
+        // The three hashes must agree so a WAL write during its own read is rejected.
+        let wal_before_read = capture_file(&adb, &serial, GAME_WAL_FILE)?;
         let wal_bytes = capture_file(&adb, &serial, GAME_WAL_FILE)?;
+        let wal_after_read = capture_file(&adb, &serial, GAME_WAL_FILE)?;
+        verify_wal_capture_unchanged(&wal_before_read, &wal_bytes, &wal_after_read).map_err(|_| {
+            "Capture consistency check failed: GameData.db-wal changed during its read. No snapshot was saved; keep Gardenscapes closed and retry.".to_string()
+        })?;
         let wal_digest = hash_hex(&wal_bytes);
 
         let main_after_wal = capture_file(&adb, &serial, "GameData.db")?;
@@ -1395,7 +1472,10 @@ mod tests {
     }
 
     #[test]
-    fn nominal_decompression_memory_budget_includes_sqlite_copy_and_decoder_headroom() {
+    fn nominal_per_frame_memory_budget_includes_overlapping_sqlite_copy_and_decoder_headroom() {
+        // The decoded output Vec and SQLite's read-only deserialize copy coexist.
+        // Snapshot/encrypted/plaintext/decoded source buffers and process overhead
+        // are additional resident memory and are not covered by this calculation.
         let peak_components = (MAX_DECOMPRESSED_BYTES * 2)
             + MAX_ZSTD_WINDOW_BYTES
             + MAX_DECOMPRESSOR_HEADROOM_BYTES;
@@ -1409,6 +1489,14 @@ mod tests {
         let before = b"stable database image";
         assert!(verify_main_capture_unchanged(before, before).is_ok());
         assert!(verify_main_capture_unchanged(before, b"changed database image").is_err());
+    }
+
+    #[test]
+    fn wal_capture_hash_guard_rejects_changes_before_or_after_selected_read() {
+        let stable = b"stable WAL image";
+        assert!(verify_wal_capture_unchanged(stable, stable, stable).is_ok());
+        assert!(verify_wal_capture_unchanged(b"older WAL", stable, stable).is_err());
+        assert!(verify_wal_capture_unchanged(stable, stable, b"newer WAL").is_err());
     }
 
     #[test]
@@ -1630,10 +1718,14 @@ mod tests {
     }
 
     #[test]
-    fn oversized_zstd_window_is_a_limit_hit() {
+    fn oversized_zstd_window_is_rejected_before_output_buffer_allocation() {
         let frame = make_windowed_zstd_frame(25, &seeded_bytes(1024 * 1024, 0x7777));
+        let declared_window = zstd_declared_window_size(&frame).expect("frame window descriptor");
+        assert!(declared_window > MAX_ZSTD_WINDOW_BYTES);
         let probe = probe_zstd_frame(&frame, 0, MAX_DECOMPRESSED_BYTES);
         assert_eq!(probe.status, "limit-hit");
+        assert!(probe.observed_output_bytes.is_none());
+        assert!(probe.note.contains("before decoder creation and output-buffer allocation"));
         assert!(probe.decoded.is_none());
     }
 
@@ -1700,8 +1792,26 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_progress_handler_interrupts_long_query_as_inconclusive_time_budget() {
+        let connection = Connection::open_in_memory().expect("open timeout-test SQLite connection");
+        let expired_deadline = Instant::now() - Duration::from_millis(1);
+        connection.progress_handler(1_000, Some(move || Instant::now() >= expired_deadline));
+
+        // This recursive aggregate is intentionally long-running without the handler.
+        let result = connection.query_row(
+            "WITH RECURSIVE counter(value) AS (VALUES(0) UNION ALL SELECT value + 1 FROM counter WHERE value < 1000000000) SELECT sum(value) FROM counter",
+            [],
+            |row| row.get::<_, i64>(0),
+        );
+        let error = result.expect_err("the expired progress-handler deadline must interrupt the query");
+        assert!(sqlite_query_was_interrupted(&error));
+        assert_eq!(sqlite_query_error_status(&error), "inspection-time-limit");
+        assert_eq!(SQLITE_TIMEOUT_LABEL, "inconclusive (time budget)");
+    }
+
+    #[test]
     fn sqlite_images_are_opened_read_only_and_wal_headers_are_checked() {
-        let mut source = Connection::open_in_memory().expect("open synthetic SQLite database");
+        let source = Connection::open_in_memory().expect("open synthetic SQLite database");
         source.execute_batch("CREATE TABLE test_items(id INTEGER PRIMARY KEY, value TEXT); INSERT INTO test_items(value) VALUES ('unchanged');")
             .expect("create synthetic schema");
         let serialized = source.serialize(rusqlite::MAIN_DB).expect("serialize synthetic SQLite");
@@ -1747,7 +1857,7 @@ mod tests {
 
     #[test]
     fn sqlite_wal_mode_image_is_not_opened_without_replaying_wal() {
-        let mut source = Connection::open_in_memory().expect("open SQLite database");
+        let source = Connection::open_in_memory().expect("open SQLite database");
         source.execute_batch("CREATE TABLE t(value INTEGER);").expect("create table");
         let serialized = source.serialize(rusqlite::MAIN_DB).expect("serialize");
         let mut bytes = serialized.to_vec();
