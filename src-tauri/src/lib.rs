@@ -3,6 +3,7 @@ use argon2::{Algorithm, Argon2, Params, Version};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use chrono::Utc;
 use rand::{rngs::OsRng, RngCore};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{fs::{self, File, OpenOptions}, io::{Cursor, Read, Write}, path::{Path, PathBuf}, process::{Command, Output}, time::UNIX_EPOCH};
@@ -10,6 +11,7 @@ use tauri::{AppHandle, Manager};
 
 const GAME_PACKAGE: &str = "com.playrix.gardenscapes";
 const GAME_DATA_DIR: &str = "/data/user/0/com.playrix.gardenscapes/Documents";
+const GAME_WAL_FILE: &str = "GameData.db-wal";
 const MAX_SAVE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_VAULT_BYTES: u64 = (MAX_SAVE_BYTES as u64) * 3 + 1024 * 1024;
 const MAX_DECOMPRESSED_BYTES: u64 = 64 * 1024 * 1024;
@@ -162,6 +164,31 @@ fn decrypt_vault_for_test(passphrase: &str, input: &[u8]) -> Result<Vec<u8>, Str
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct SqliteWalDiagnostics {
+    present: bool,
+    size_bytes: usize,
+    status: String,
+    magic_hex: Option<String>,
+    page_size_bytes: Option<usize>,
+    complete_frames: usize,
+    salt_matching_frames: usize,
+    trailing_bytes: usize,
+    note: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SqliteDiagnostics {
+    opened_read_only: bool,
+    status: String,
+    sqlite_version: Option<String>,
+    schema_objects: Vec<String>,
+    quick_check: Option<String>,
+    wal: Option<SqliteWalDiagnostics>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ByteDiagnostics {
     size_bytes: usize,
     sha256: String,
@@ -180,6 +207,7 @@ struct ByteDiagnostics {
     size_mod_4096: usize,
     tail_hex: String,
     embedded_signatures: Vec<String>,
+    sqlite_database: Option<SqliteDiagnostics>,
 }
 
 #[derive(Debug, Serialize)]
