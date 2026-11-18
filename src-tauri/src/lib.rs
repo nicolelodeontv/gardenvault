@@ -1421,6 +1421,9 @@ fn parse_capture_output(
         .map_err(|_| format!("Could not read {file_name}: invalid device metadata header."))?;
     let (size_text, device_sha256) = metadata.split_once(':')
         .ok_or_else(|| format!("Could not read {file_name}: missing device SHA-256 in capture header."))?;
+    // ADB/root-shell wrappers may emit a CRLF metadata line. Trim only the
+    // textual digest field; the binary payload below remains byte-for-byte raw.
+    let device_sha256 = device_sha256.trim();
     let expected_size = size_text.trim().parse::<usize>()
         .map_err(|_| format!("Could not read {file_name}: invalid device stat size."))?;
     if expected_size == 0 {
@@ -2042,6 +2045,24 @@ mod tests {
         let error = parse_capture_output("GameData.db", &translated, b"", true)
             .expect_err("translated stream must not match device hash");
         assert!(error.contains("does not match received bytes"));
+    }
+
+    #[test]
+    fn crlf_capture_header_is_accepted_without_changing_binary_payload() {
+        let binary = b"garden\\r\\nstate\\x00data";
+        let header = format!(
+            "__GARDENVAULT_CAPTURE__:{}:{}\\r\\n",
+            binary.len(),
+            hash_hex(binary)
+        );
+        let mut stdout = header.into_bytes();
+        stdout.extend_from_slice(binary);
+
+        assert_eq!(
+            parse_capture_output("GameData.db", &stdout, b"", true)
+                .expect("CRLF metadata header with intact binary payload"),
+            Some(binary.to_vec())
+        );
     }
 
     #[test]

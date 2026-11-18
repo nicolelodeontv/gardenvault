@@ -1,6 +1,6 @@
 # Product roadmap
 
-## v1.0.0-rc.10 — Read-only transform diagnostics
+## v1.0.0-rc.11 — Read-only transform diagnostics
 - [x] Authenticated in-memory snapshot inspection and SHA-256 verification
 - [x] Scan the complete file for every occurrence of the known strong signatures
 - [x] Record all Zstandard candidate offsets and attempt bounded streaming decode at each (up to 32 per file)

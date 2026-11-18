@@ -2,7 +2,7 @@
 
 GardenVault is a local-first Windows desktop utility for reading Gardenscapes profile files from an authorized LDPlayer 14 instance and creating encrypted offline snapshots.
 
-## v1.0.0-rc.10 — Read-only binary forensics
+## v1.0.0-rc.11 — Read-only binary forensics
 
 - Detect connected LDPlayer emulators through ADB and verify the Gardenscapes package and root availability.
 - Capture `GameData.db` and `GameData.db.bak` only after confirming the game process is stopped. GardenVault does not force-stop the game; close it manually so its save can finish. For each file, the emulator reports `stat -c %s` and its own `sha256sum` before streaming bytes through `adb exec-out`; GardenVault rejects a size mismatch, digest mismatch, zero-length file, root-shell failure, or incomplete transfer. The optional `GameData.db-wal` is captured only when an explicit missing/present check confirms it; if absent, it is not added to snapshot files or file metadata. When present, compare main-database hashes before/after the WAL capture and compare WAL hashes from reads immediately before and after the selected WAL snapshot. These checks detect transfer corruption and concurrent changes, but are not a filesystem-atomic snapshot.
