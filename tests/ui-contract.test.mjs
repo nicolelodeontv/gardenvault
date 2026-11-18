@@ -37,7 +37,10 @@ test("encrypted backup browser exposes refresh and export controls", () => {
   assert.match(js, /tailHex/);
   assert.match(js, /frameContentSizeBytes/);
   assert.match(js, /observedOutputBytes/);
-  assert.match(js, /zstdCandidatesOverlappingSkipped/);\n  assert.match(js, /sqliteDatabase/);\n  assert.match(js, /quickCheck/);\n  assert.match(js, /completeFrames/);
+  assert.match(js, /zstdCandidatesOverlappingSkipped/);
+  assert.match(js, /sqliteDatabase/);
+  assert.match(js, /quickCheck/);
+  assert.match(js, /completeFrames/);
   assert.match(js, /data-file-name/);
 });
 test("passphrase is cleared after a capture attempt", () => {
