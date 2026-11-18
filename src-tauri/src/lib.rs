@@ -9,6 +9,8 @@ use sha2::{Digest, Sha256};
 use std::{fs::{self, File, OpenOptions}, io::{Cursor, Read, Write}, path::{Path, PathBuf}, process::{Command, Output}, time::{Duration, Instant, UNIX_EPOCH}};
 use tauri::{AppHandle, Manager};
 
+mod pull_capture;
+
 const GAME_PACKAGE: &str = "com.playrix.gardenscapes";
 const GAME_DATA_DIR: &str = "/data/user/0/com.playrix.gardenscapes/Documents";
 const GAME_WAL_FILE: &str = "GameData.db-wal";
@@ -1725,25 +1727,25 @@ fn read_profile(app: AppHandle, serial: String, passphrase: String) -> Result<Re
     let mut file_infos = Vec::new();
     let mut vault_files = Vec::new();
 
-    let main_bytes = capture_file(&adb, &serial, "GameData.db")?;
+    let main_bytes = pull_capture::capture_file(&adb, &serial, "GameData.db")?;
     append_captured_file("GameData.db", main_bytes.clone(), &mut file_infos, &mut vault_files);
 
-    let backup_bytes = capture_file(&adb, &serial, "GameData.db.bak")?;
+    let backup_bytes = pull_capture::capture_file(&adb, &serial, "GameData.db.bak")?;
     append_captured_file("GameData.db.bak", backup_bytes, &mut file_infos, &mut vault_files);
 
     // Capture the optional WAL three times. All-absent means no WAL record is
     // written; all-present must hash identically. A presence transition or
     // changed main database rejects the capture rather than making a mixed pair.
-    let main_before_wal = capture_file(&adb, &serial, "GameData.db")?;
+    let main_before_wal = pull_capture::capture_file(&adb, &serial, "GameData.db")?;
     verify_main_capture_unchanged(&main_bytes, &main_before_wal).map_err(|_| {
         "Capture consistency check failed: GameData.db changed before WAL capture. Keep Gardenscapes closed and retry.".to_string()
     })?;
 
-    let wal_before_read = capture_file_optional(&adb, &serial, GAME_WAL_FILE)?;
-    let wal_bytes = capture_file_optional(&adb, &serial, GAME_WAL_FILE)?;
-    let wal_after_read = capture_file_optional(&adb, &serial, GAME_WAL_FILE)?;
+    let wal_before_read = pull_capture::capture_file_optional(&adb, &serial, GAME_WAL_FILE)?;
+    let wal_bytes = pull_capture::capture_file_optional(&adb, &serial, GAME_WAL_FILE)?;
+    let wal_after_read = pull_capture::capture_file_optional(&adb, &serial, GAME_WAL_FILE)?;
 
-    let main_after_wal = capture_file(&adb, &serial, "GameData.db")?;
+    let main_after_wal = pull_capture::capture_file(&adb, &serial, "GameData.db")?;
     verify_main_capture_unchanged(&main_before_wal, &main_after_wal).map_err(|_| {
         "Capture consistency check failed: GameData.db changed while its optional WAL was being checked. Keep Gardenscapes closed and retry.".to_string()
     })?;
@@ -1776,7 +1778,7 @@ fn read_profile(app: AppHandle, serial: String, passphrase: String) -> Result<Re
         package: GAME_PACKAGE.to_string(),
         device_serial: serial.clone(),
         captured_at: captured_at.clone(),
-        capture_integrity: Some("device-stat-sha256-v1".to_string()),
+        capture_integrity: Some("device-copy-pull-sha256-v1".to_string()),
         missing_optional_files: missing_optional_files.clone(),
         files: vault_files,
     };
@@ -2086,7 +2088,7 @@ mod tests {
             package: GAME_PACKAGE.to_string(),
             device_serial: "emulator-5556".to_string(),
             captured_at: "2026-11-18T14:58:25Z".to_string(),
-            capture_integrity: Some("device-stat-sha256-v1".to_string()),
+            capture_integrity: Some("device-copy-pull-sha256-v1".to_string()),
             missing_optional_files: vec![GAME_WAL_FILE.to_string()],
             files: Vec::new(),
         };
