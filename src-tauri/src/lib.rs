@@ -816,7 +816,19 @@ fn probe_zstd_frame(bytes: &[u8], offset: usize, remaining_budget: u64) -> ZstdP
         };
     }
 
+    // Reserve only the fixed safety ceiling, never the frame's declared size.
+    // One allocation avoids transient old+new Vec buffers during repeated growth.
     let mut output = Vec::new();
+    if output.try_reserve_exact(output_limit as usize).is_err() {
+        return ZstdProbe {
+            offset, status: "limit-hit".to_string(), frame_content_size_bytes: declared_size,
+            compressed_frame_size_bytes: Some(frame_size),
+            trailing_bytes_after_frame: Some(payload.len() - frame_size),
+            observed_output_bytes: Some(0),
+            note: "Could not reserve the fixed bounded streaming output buffer; no decompression was attempted.".to_string(),
+            decoded: None,
+        };
+    }
     let mut limited = decoder.take(output_limit.saturating_add(1));
     let mut chunk = [0_u8; 32 * 1024];
     loop {
@@ -954,11 +966,11 @@ fn detect_file_format(bytes: &[u8]) -> String {
     if bytes.starts_with(b"PK\x03\x04") { return "ZIP archive".to_string(); }
     if bytes.starts_with(&[0x1f, 0x8b]) { return "GZIP compressed data".to_string(); }
     if bytes.starts_with(b"bplist00") { return "Apple binary property list".to_string(); }
-    let trimmed = bytes.iter().copied().skip_while(|b| b.is_ascii_whitespace()).collect::<Vec<_>>();
-    if trimmed.starts_with(b"{") || trimmed.starts_with(b"[") {
-        return if serde_json::from_slice::<serde_json::Value>(bytes).is_ok() { "JSON".to_string() } else { "JSON-like text (invalid JSON)".to_string() };
+    let first_non_whitespace = bytes.iter().copied().find(|byte| !byte.is_ascii_whitespace());
+    if matches!(first_non_whitespace, Some(b'{' | b'[')) {
+        return "JSON-like text (not parsed)".to_string();
     }
-    if trimmed.starts_with(b"<?xml") || trimmed.starts_with(b"<") { return "XML-like text".to_string(); }
+    if first_non_whitespace == Some(b'<') { return "XML-like text".to_string(); }
     if bytes.starts_with(b"UnityFS") { return "UnityFS asset bundle".to_string(); }
     if bytes.starts_with(ZSTD_MAGIC) { return "Zstandard frame".to_string(); }
     if bytes.starts_with(b"PLXE") { return "Playrix PLXE container (payload not decoded)".to_string(); }
