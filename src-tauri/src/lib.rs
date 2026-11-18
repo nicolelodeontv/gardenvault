@@ -1002,6 +1002,14 @@ fn remote_file_exists(adb: &Path, serial: &str, file_name: &str) -> Result<bool,
     Ok(output.status.success())
 }
 
+fn verify_main_capture_unchanged(before: &[u8], after: &[u8]) -> Result<(), String> {
+    if hash_hex(before) == hash_hex(after) {
+        Ok(())
+    } else {
+        Err("GameData.db changed while its companion WAL was being captured.".to_string())
+    }
+}
+
 fn capture_file(adb: &Path, serial: &str, file_name: &str) -> Result<Vec<u8>, String> {
     let command = root_cat_command(file_name)?;
     // exec-out avoids a PTY so bytes are captured without terminal conversion.
@@ -1247,18 +1255,18 @@ fn read_profile(app: AppHandle, serial: String, passphrase: String) -> Result<Re
         // If it changed, reject the mixed capture instead of saving a torn pair.
         let main_before_wal = capture_file(&adb, &serial, "GameData.db")?;
         let before_digest = hash_hex(&main_before_wal);
-        if before_digest != main_digest {
-            return Err("Capture consistency check failed: GameData.db changed before WAL capture. Keep Gardenscapes closed and retry.".to_string());
-        }
+        verify_main_capture_unchanged(&main_bytes, &main_before_wal).map_err(|_| {
+            "Capture consistency check failed: GameData.db changed before WAL capture. Keep Gardenscapes closed and retry.".to_string()
+        })?;
 
         let wal_bytes = capture_file(&adb, &serial, GAME_WAL_FILE)?;
         let wal_digest = hash_hex(&wal_bytes);
 
         let main_after_wal = capture_file(&adb, &serial, "GameData.db")?;
         let after_digest = hash_hex(&main_after_wal);
-        if after_digest != before_digest {
-            return Err("Capture consistency check failed: GameData.db changed while GameData.db-wal was being captured. No snapshot was saved; keep Gardenscapes closed and retry.".to_string());
-        }
+        verify_main_capture_unchanged(&main_before_wal, &main_after_wal).map_err(|_| {
+            "Capture consistency check failed: GameData.db changed while GameData.db-wal was being captured. No snapshot was saved; keep Gardenscapes closed and retry.".to_string()
+        })?;
 
         let process_after = run_adb_for_device(&adb, &serial, &["shell", "pidof", GAME_PACKAGE])?;
         if !String::from_utf8_lossy(&process_after.stdout).trim().is_empty() {
@@ -1357,6 +1365,38 @@ mod tests {
             state ^= state << 17;
             (state >> 24) as u8
         }).collect()
+    }
+
+    #[test]
+    fn main_capture_hash_guard_accepts_stable_bytes_and_rejects_changed_bytes() {
+        let before = b"stable database image";
+        assert!(verify_main_capture_unchanged(before, before).is_ok());
+        assert!(verify_main_capture_unchanged(before, b"changed database image").is_err());
+    }
+
+    #[test]
+    fn zstd_skippable_frame_magic_range_is_reported_separately() {
+        let mut bytes = b"prefix".to_vec();
+        let complete_offset = bytes.len();
+        bytes.extend_from_slice(&0x184D_2A50_u32.to_le_bytes());
+        bytes.extend_from_slice(&3_u32.to_le_bytes());
+        bytes.extend_from_slice(b"meta");
+        let incomplete_offset = bytes.len();
+        bytes.extend_from_slice(&0x184D_2A5F_u32.to_le_bytes());
+        bytes.extend_from_slice(&32_u32.to_le_bytes());
+        bytes.extend_from_slice(b"xy");
+
+        let frames = find_zstd_skippable_frames(&bytes);
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].offset, complete_offset);
+        assert_eq!(frames[0].frame_id, 0);
+        assert_eq!(frames[0].declared_payload_bytes, 3);
+        assert_eq!(frames[0].status, "unvalidated-complete-skippable-frame");
+        assert_eq!(frames[1].offset, incomplete_offset);
+        assert_eq!(frames[1].frame_id, 15);
+        assert_eq!(frames[1].available_payload_bytes, 2);
+        assert_eq!(frames[1].status, "incomplete-skippable-frame");
+        assert!(find_signature_offsets(&bytes, ZSTD_MAGIC).is_empty());
     }
 
     #[test]
@@ -1631,6 +1671,9 @@ mod tests {
         assert!(report.opened_read_only);
         assert_eq!(report.quick_check.as_deref(), Some("ok"));
         assert!(report.schema_objects.iter().any(|name| name == "test_items"));
+        assert!(report.note.contains("defensive mode"));
+        assert!(report.note.contains("extension loading was explicitly disabled"));
+        assert!(report.note.contains("500 ms progress-handler budget"));
         assert_eq!(hash_hex(&sqlite_bytes), original_hash);
 
         let page_size = 512_u32;
@@ -1647,7 +1690,9 @@ mod tests {
 
         let wal_report = inspect_sqlite_wal(Some(&wal));
         assert!(wal_report.present);
-        assert_eq!(wal_report.status, "valid-header-frames");
+        assert_eq!(wal_report.status, "unvalidated-header-and-frame-layout");
+        assert_eq!(wal_report.checksum_validation, "unvalidated");
+        assert!(wal_report.note.contains("UNVALIDATED"));
         assert_eq!(wal_report.page_size_bytes, Some(512));
         assert_eq!(wal_report.complete_frames, 1);
         assert_eq!(wal_report.salt_matching_frames, 1);
@@ -1655,7 +1700,7 @@ mod tests {
 
         wal.push(0xAA);
         let tail_report = inspect_sqlite_wal(Some(&wal));
-        assert_eq!(tail_report.status, "frames-or-tail-need-review");
+        assert_eq!(tail_report.status, "unvalidated-frames-or-tail-need-review");
         assert_eq!(tail_report.trailing_bytes, 1);
     }
 
@@ -1665,11 +1710,12 @@ mod tests {
         source.execute_batch("CREATE TABLE t(value INTEGER);").expect("create table");
         let serialized = source.serialize(rusqlite::MAIN_DB).expect("serialize");
         let mut bytes = serialized.to_vec();
-        bytes[18] = 2;
+        bytes[18] = 1;
         bytes[19] = 2;
         let report = inspect_sqlite_readonly(&bytes).expect("SQLite header");
         assert!(!report.opened_read_only);
-        assert_eq!(report.status, "wal-mode-needs-replay");
+        assert_eq!(report.status, "wal-mode-main-file-only-may-be-stale");
+        assert!(report.quick_check.is_none());
         assert!(report.note.contains("not replayed"));
     }
 
