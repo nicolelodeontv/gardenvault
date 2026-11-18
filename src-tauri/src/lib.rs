@@ -201,6 +201,7 @@ struct InspectedFile {
     #[serde(flatten)]
     diagnostics: ByteDiagnostics,
     plxe_header_words: Vec<String>,
+    plxe_header_decoded_size_matches: Vec<String>,
     zstd_candidates_total: usize,
     zstd_candidates_attempted: usize,
     zstd_candidates_skipped: usize,
@@ -334,6 +335,37 @@ fn plxe_header_words(bytes: &[u8], plxe_offsets: &[usize], zstd_offsets: &[usize
         }
     }
     words
+}
+
+fn plxe_header_decoded_size_matches(bytes: &[u8], plxe_offsets: &[usize], probes: &[ZstdProbe]) -> Vec<String> {
+    let mut matches = Vec::new();
+    let decoded_frames = probes.iter()
+        .filter_map(|probe| probe.decoded.as_ref().map(|decoded| (probe.offset, decoded.size_bytes)));
+    let decoded_frames = decoded_frames.collect::<Vec<_>>();
+    for &plxe_offset in plxe_offsets.iter().take(32) {
+        let Some(header_start) = plxe_offset.checked_add(4) else { continue };
+        let header_end = bytes.len().min(plxe_offset.saturating_add(36));
+        let mut field_offset = header_start;
+        while field_offset.saturating_add(4) <= header_end {
+            let value = u32::from_le_bytes([
+                bytes[field_offset],
+                bytes[field_offset + 1],
+                bytes[field_offset + 2],
+                bytes[field_offset + 3],
+            ]) as usize;
+            for (frame_offset, decoded_size) in &decoded_frames {
+                if value == *decoded_size {
+                    matches.push(format!(
+                        "PLXE@0x{plxe_offset:X} +0x{:02X} equals decoded size {} from Zstandard@0x{frame_offset:X}",
+                        field_offset - plxe_offset,
+                        decoded_size
+                    ));
+                }
+            }
+            field_offset += 4;
+        }
+    }
+    matches
 }
 
 fn byte_diagnostics(bytes: &[u8]) -> ByteDiagnostics {
@@ -472,15 +504,16 @@ fn probe_zstd_frame(bytes: &[u8], offset: usize) -> ZstdProbe {
     }
 }
 
-fn inspect_bytes(bytes: &[u8]) -> (ByteDiagnostics, Vec<String>, usize, Vec<ZstdProbe>) {
+fn inspect_bytes(bytes: &[u8]) -> (ByteDiagnostics, Vec<String>, Vec<String>, usize, Vec<ZstdProbe>) {
     let plxe_offsets = find_signature_offsets(bytes, b"PLXE");
     let zstd_offsets = find_signature_offsets(bytes, ZSTD_MAGIC);
     let header_words = plxe_header_words(bytes, &plxe_offsets, &zstd_offsets);
     let attempted = zstd_offsets.len().min(MAX_ZSTD_PROBES);
     let probes = zstd_offsets.iter().take(attempted)
         .map(|offset| probe_zstd_frame(bytes, *offset))
-        .collect();
-    (byte_diagnostics(bytes), header_words, zstd_offsets.len() - attempted, probes)
+        .collect::<Vec<_>>();
+    let decoded_size_matches = plxe_header_decoded_size_matches(bytes, &plxe_offsets, &probes);
+    (byte_diagnostics(bytes), header_words, decoded_size_matches, zstd_offsets.len() - attempted, probes)
 }
 
 fn detect_file_format(bytes: &[u8]) -> String {
@@ -679,11 +712,12 @@ fn inspect_vault(app: AppHandle, file_name: String, passphrase: String) -> Resul
         if bytes.len() != file.size_bytes || hash_hex(&bytes) != file.sha256 {
             return Err(format!("Integrity check failed for {}.", file.name));
         }
-        let (diagnostics, header_words, zstd_candidates_skipped, zstd_probes) = inspect_bytes(&bytes);
+        let (diagnostics, header_words, decoded_size_matches, zstd_candidates_skipped, zstd_probes) = inspect_bytes(&bytes);
         inspected.push(InspectedFile {
             name: file.name,
             diagnostics,
             plxe_header_words: header_words,
+            plxe_header_decoded_size_matches: decoded_size_matches,
             zstd_candidates_total: find_signature_offsets(&bytes, ZSTD_MAGIC).len(),
             zstd_candidates_attempted: zstd_probes.len(),
             zstd_candidates_skipped,
@@ -882,7 +916,7 @@ mod tests {
         let first_payload_length = (bytes.len() - first_offset) as u32;
         bytes[4..8].copy_from_slice(&first_payload_length.to_le_bytes());
 
-        let (_, header_words, skipped, probes) = inspect_bytes(&bytes);
+        let (_, header_words, decoded_size_matches, skipped, probes) = inspect_bytes(&bytes);
         assert_eq!(find_signature_offsets(&bytes, ZSTD_MAGIC), vec![first_offset, second_offset]);
         assert_eq!(probes.len(), 2);
         assert_eq!(skipped, 0);
