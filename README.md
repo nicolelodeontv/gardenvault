@@ -14,7 +14,8 @@ GardenVault is a local-first Windows desktop utility for reading Gardenscapes pr
 - Parse little-endian u32 words following each PLXE magic and compare plausible lengths with the file, candidate payload, and successfully decoded output sizes.
 - Attempt bounded streaming Zstandard decoding at candidate offsets. Report explicit statuses (`signature-only`, `incomplete`, `decode-failed`, `limit-hit`, `decoded-size-matches`, and `decoded-size-mismatch`), frame offsets, declared/observed sizes, compressed frame sizes, trailing bytes, and diagnostics for complete decoded output.
 - Skip candidate magic that falls inside an already measured frame, while still attempting a new frame exactly at the prior frame boundary.
-- Report Zstandard skippable frames (magic range `0x184D2A50`–`0x184D2A5F`) separately; they are metadata frames and do not count as normal decode candidates.\n- Stream decoded output through a 32 KiB scratch buffer and grow the retained output only as bytes arrive. The nominal 64 MiB decompression working-set budget is split into 40 MiB retained output, a 16 MiB Zstandard window cap, and 8 MiB decoder/scratch headroom. The cumulative output cap and 32-real-attempt limit apply per file. Inspection never extracts files to disk or writes to the game directory.
+- Report Zstandard skippable frames (magic range `0x184D2A50`–`0x184D2A5F`) separately; they are metadata frames and do not count as normal decode candidates.
+- Stream decoded output through a 32 KiB scratch buffer and grow the retained output only as bytes arrive. The nominal 64 MiB decompression working-set budget is split into 40 MiB retained output, a 16 MiB Zstandard window cap, and 8 MiB decoder/scratch headroom. The cumulative output cap and 32-real-attempt limit apply per file. Inspection never extracts files to disk or writes to the game directory.
 
 ## Compatibility limits
 
@@ -26,7 +27,11 @@ A community reverse-engineering post documents PLXE + Zstandard wrapping for cer
 
 Playrix says progress is automatically saved while connected to the internet: [Playrix support](https://playrix.helpshift.com/hc/en/5-gardenscapes/faq/718-saving-game-progress/).
 
-## Verification status\n\n**RC8 is not verified yet.** The Windows native Rust test suite must pass in full and the Windows x64 installer must complete successfully before this build is treated as ready. A successful frontend test run alone is not sufficient.\n\n## Build on Windows
+## Verification status
+
+**RC8 is not verified yet.** The Windows native Rust test suite must pass in full and the Windows x64 installer must complete successfully before this build is treated as ready. A successful frontend test run alone is not sufficient.
+
+## Build on Windows
 
 Requirements: Node.js 22+, Rust stable with the MSVC target, Visual Studio C++ Build Tools + Windows SDK, and NSIS.
 
