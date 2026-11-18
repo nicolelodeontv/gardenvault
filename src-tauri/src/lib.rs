@@ -518,7 +518,7 @@ fn sqlite_query_was_interrupted(error: &rusqlite::Error) -> bool {
 
 fn sqlite_query_error_status(error: &rusqlite::Error) -> &'static str {
     if sqlite_query_was_interrupted(error) {
-        "inspection-time-limit"
+        SQLITE_TIMEOUT_LABEL
     } else {
         "quick-check-error"
     }
@@ -643,7 +643,7 @@ fn inspect_sqlite_readonly(bytes: &[u8]) -> Option<SqliteDiagnostics> {
     Some(SqliteDiagnostics {
         opened_read_only: true,
         status: if schema_timed_out {
-            "inspection-time-limit".to_string()
+            SQLITE_TIMEOUT_LABEL.to_string()
         } else if quick_check.as_deref() == Some("ok") {
             "opened-readonly-integrity-ok".to_string()
         } else {
@@ -665,11 +665,14 @@ fn find_zstd_skippable_frames(bytes: &[u8]) -> Vec<ZstdSkippableFrame> {
     if bytes.len() < 4 {
         return frames;
     }
-    for offset in 0..=bytes.len() - 4 {
+
+    let mut offset = 0_usize;
+    while offset.saturating_add(4) <= bytes.len() {
         let magic = u32::from_le_bytes([
             bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3],
         ]);
         if !(ZSTD_SKIPPABLE_MAGIC_BASE..=ZSTD_SKIPPABLE_MAGIC_BASE + 15).contains(&magic) {
+            offset += 1;
             continue;
         }
 
@@ -684,14 +687,32 @@ fn find_zstd_skippable_frames(bytes: &[u8]) -> Vec<ZstdSkippableFrame> {
                 status: "incomplete-skippable-header".to_string(),
                 note: "Zstandard skippable magic is present, but the 4-byte payload-length field is truncated.".to_string(),
             });
+            offset += 1;
             continue;
         }
 
         let declared_payload_bytes = u32::from_le_bytes([
             bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7],
         ]) as usize;
-        let available_payload_bytes = remaining - 8;
-        let complete = declared_payload_bytes <= available_payload_bytes;
+        let available_to_eof = remaining - 8;
+        let complete = declared_payload_bytes <= available_to_eof;
+
+        // A skippable frame's payload is opaque. Do not interpret magic-looking
+        // bytes inside a complete payload as nested frames. For an incomplete
+        // payload, report bytes only up to the next recognizable header so a
+        // following truncated frame is not accidentally counted as payload.
+        let next_header = (offset + 8..=bytes.len().saturating_sub(4)).find(|candidate| {
+            let candidate_magic = u32::from_le_bytes([
+                bytes[*candidate], bytes[*candidate + 1], bytes[*candidate + 2], bytes[*candidate + 3],
+            ]);
+            (ZSTD_SKIPPABLE_MAGIC_BASE..=ZSTD_SKIPPABLE_MAGIC_BASE + 15).contains(&candidate_magic)
+        });
+        let available_payload_bytes = if complete {
+            declared_payload_bytes
+        } else {
+            next_header.map(|next| next - (offset + 8)).unwrap_or(available_to_eof)
+        };
+
         frames.push(ZstdSkippableFrame {
             offset,
             magic_hex: hex::encode(&bytes[offset..offset + 4]),
@@ -705,6 +726,14 @@ fn find_zstd_skippable_frames(bytes: &[u8]) -> Vec<ZstdSkippableFrame> {
                 "Zstandard skippable-frame header was found, but its declared payload extends beyond the captured file.".to_string()
             },
         });
+
+        if complete {
+            offset = offset.saturating_add(8).saturating_add(declared_payload_bytes);
+        } else if let Some(next) = next_header {
+            offset = next;
+        } else {
+            break;
+        }
     }
     frames
 }
@@ -1654,7 +1683,16 @@ mod tests {
         assert_eq!(probes[0].offset, frame_offset);
         assert_eq!(probes[0].status, "decoded-size-matches");
         assert!(header_words.iter().any(|word| word.contains("matches compressed Zstandard frame length")));
-        assert!(decoded_matches.iter().any(|word| word.contains("+0x08 equals decoded size")));
+        assert_eq!(
+            probes[0].decoded.as_ref().map(|decoded| decoded.size_bytes),
+            Some(original.len()),
+            "successful frame diagnostics should retain the actual decoded byte count"
+        );
+        assert!(
+            decoded_matches.iter().any(|word| word.contains("+0x08 equals decoded size")),
+            "decoded-size field comparison missing; header_words={header_words:?}, decoded_matches={decoded_matches:?}, decoded={:?}",
+            probes[0].decoded.as_ref().map(|decoded| decoded.size_bytes)
+        );
     }
 
     #[test]
@@ -1718,13 +1756,20 @@ mod tests {
     }
 
     #[test]
-    fn oversized_zstd_window_is_rejected_before_output_buffer_allocation() {
-        let frame = make_windowed_zstd_frame(25, &seeded_bytes(1024 * 1024, 0x7777));
-        let declared_window = zstd_declared_window_size(&frame).expect("frame window descriptor");
-        assert!(declared_window > MAX_ZSTD_WINDOW_BYTES);
+    fn one_gib_zstd_window_is_rejected_from_header_before_decoder_or_output_allocation() {
+        // Non-single-segment Zstandard frame header: magic, descriptor, and
+        // window descriptor only. 10 + (20) = log2(1 GiB); there is no block body.
+        let mut frame = ZSTD_MAGIC.to_vec();
+        frame.push(0x00);
+        frame.push(20 << 3);
+        assert_eq!(frame.len(), 6);
+
+        let declared_window = zstd_declared_window_size(&frame).expect("header window descriptor");
+        assert_eq!(declared_window, 1024 * 1024 * 1024);
         let probe = probe_zstd_frame(&frame, 0, MAX_DECOMPRESSED_BYTES);
         assert_eq!(probe.status, "limit-hit");
-        assert!(probe.observed_output_bytes.is_none());
+        assert!(probe.compressed_frame_size_bytes.is_none(), "frame sizing must not be attempted");
+        assert!(probe.observed_output_bytes.is_none(), "no decompression output should exist");
         assert!(probe.note.contains("before decoder creation and output-buffer allocation"));
         assert!(probe.decoded.is_none());
     }
@@ -1805,7 +1850,7 @@ mod tests {
         );
         let error = result.expect_err("the expired progress-handler deadline must interrupt the query");
         assert!(sqlite_query_was_interrupted(&error));
-        assert_eq!(sqlite_query_error_status(&error), "inspection-time-limit");
+        assert_eq!(sqlite_query_error_status(&error), "inconclusive (time budget)");
         assert_eq!(SQLITE_TIMEOUT_LABEL, "inconclusive (time budget)");
     }
 
