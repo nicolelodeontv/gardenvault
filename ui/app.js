@@ -100,6 +100,9 @@ function renderVaults(vaults) {
         const captureIntegritySummary = deviceCaptureAttested
           ? "Capture transfer attestation: device stat size and SHA-256 matched the received bytes."
           : "Capture transfer attestation: unavailable for this older vault; only the encrypted vault payload is being integrity-checked.";
+        const missingOptionalSummary = deviceCaptureAttested && (report.missingOptionalFiles || []).length
+          ? `Optional files not present: ${report.missingOptionalFiles.join(", ")}. No file entry was stored.`
+          : "";
         const details = report.files.map(file => {
           const embedded = (file.embeddedSignatures || []).join("\n  ");
           const headerWords = (file.plxeHeaderWords || []).join("\n  ") || "No PLXE header fields found";
@@ -152,7 +155,7 @@ PLXE words matching decoded sizes:
   ${decodedSizeMatches}
 Zstandard candidates: ${file.zstdCandidatesAttempted} attempted / ${file.zstdCandidatesTotal} signatures · ${file.zstdCandidatesSkipped} skipped by 32-attempt cap · ${file.zstdCandidatesOverlappingSkipped} nested/overlapping signatures skipped
 ${zstd}`;
-        }).join("\n\n");        status.textContent = `${captureIntegritySummary}\n\n${details}${report.identicalFiles ? " · All captured files are byte-for-byte identical." : ""}`;
+        }).join("\n\n");        status.textContent = `${captureIntegritySummary}${missingOptionalSummary ? `\n${missingOptionalSummary}` : ""}\n\n${details}${report.identicalFiles ? " · All captured files are byte-for-byte identical." : ""}`;
         status.className = "vault-row-status success";
       } catch (error) { status.textContent = String(error); status.className = "vault-row-status error"; }
       finally { button.disabled = false; if (inspectPassphraseInput) inspectPassphraseInput.value = ""; }
