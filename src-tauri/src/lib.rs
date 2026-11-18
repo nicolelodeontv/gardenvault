@@ -449,15 +449,16 @@ fn inspect_vault(app: AppHandle, file_name: String, passphrase: String) -> Resul
         if bytes.len() != file.size_bytes || hash_hex(&bytes) != file.sha256 {
             return Err(format!("Integrity check failed for {}.", file.name));
         }
-        let signature_hex = hex::encode(bytes.iter().take(16).copied().collect::<Vec<_>>());
+        let signature_hex = hex::encode(bytes.iter().take(32).copied().collect::<Vec<_>>());
+        let entropy = byte_entropy(&bytes);
         inspected.push(InspectedFile {
             name: file.name,
             size_bytes: bytes.len(),
             sha256: file.sha256,
             detected_format: detect_file_format(&bytes),
             signature_hex,
-            entropy_bits_per_byte: byte_entropy(&bytes),
-            entropy_assessment: entropy_assessment(byte_entropy(&bytes)),
+            entropy_bits_per_byte: entropy,
+            entropy_assessment: entropy_assessment(entropy),
             printable_ascii_percent: byte_percent(&bytes, |b| (0x20..=0x7e).contains(&b)),
             zero_byte_percent: byte_percent(&bytes, |b| b == 0),
             unique_byte_values: unique_byte_count(&bytes),
