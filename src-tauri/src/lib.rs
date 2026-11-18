@@ -96,6 +96,22 @@ struct VaultFile {
     content_base64: String,
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
+const LDPLAYER_FOLDERS: [&str; 3] = ["LDPlayer14", "LDPlayer9", "LDPlayer"];
+
+/// Ordered list of places LDPlayer's bundled ADB is commonly installed.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn adb_candidates(roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    for root in roots {
+        for folder in LDPLAYER_FOLDERS {
+            candidates.push(root.join(folder).join("adb.exe"));
+            candidates.push(root.join("LDPlayer").join(folder).join("adb.exe"));
+        }
+    }
+    candidates
+}
+
 fn adb_executable() -> PathBuf {
     if let Some(explicit) = std::env::var_os("GARDENVAULT_ADB") {
         let path = PathBuf::from(explicit);
@@ -105,18 +121,17 @@ fn adb_executable() -> PathBuf {
     }
     #[cfg(windows)]
     {
-        let common = PathBuf::from(r"C:\LDPlayer\LDPlayer14\adb.exe");
-        if common.is_file() {
-            return common;
-        }
-        if let Some(program_files) = std::env::var_os("ProgramFiles") {
-            let candidate = PathBuf::from(program_files)
-                .join("LDPlayer")
-                .join("LDPlayer14")
-                .join("adb.exe");
-            if candidate.is_file() {
-                return candidate;
+        let mut roots: Vec<PathBuf> = ["C", "D", "E", "F"]
+            .iter()
+            .map(|drive| PathBuf::from(format!(r"{drive}:\")))
+            .collect();
+        for var in ["ProgramFiles", "ProgramFiles(x86)"] {
+            if let Some(dir) = std::env::var_os(var) {
+                roots.push(PathBuf::from(dir));
             }
+        }
+        if let Some(found) = adb_candidates(&roots).into_iter().find(|c| c.is_file()) {
+            return found;
         }
     }
     PathBuf::from("adb")
@@ -2263,6 +2278,24 @@ mod tests {
         assert_eq!(frames[2].offset, header_only_offset);
         assert_eq!(frames[2].status, "incomplete-skippable-header");
         assert!(find_signature_offsets(&bytes, ZSTD_MAGIC).is_empty());
+    }
+
+    #[test]
+    fn adb_candidates_cover_ldplayer_versions_and_roots_in_priority_order() {
+        let roots = vec![PathBuf::from("C:/"), PathBuf::from("D:/")];
+        let list = adb_candidates(&roots);
+        assert_eq!(
+            list.first().unwrap(),
+            &PathBuf::from("C:/").join("LDPlayer14").join("adb.exe")
+        );
+        assert!(list.contains(&PathBuf::from("D:/").join("LDPlayer9").join("adb.exe")));
+        assert!(list.contains(
+            &PathBuf::from("C:/")
+                .join("LDPlayer")
+                .join("LDPlayer14")
+                .join("adb.exe")
+        ));
+        assert!(list.iter().all(|p| p.file_name().unwrap() == "adb.exe"));
     }
 
     #[test]

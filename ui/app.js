@@ -46,7 +46,7 @@ async function refreshDevices() {
     deviceSelect.innerHTML = "";
     if (devices.length === 0) {
       deviceSelect.innerHTML = '<option value="">No supported LDPlayer found</option>';
-      deviceSummary.textContent = "Start LDPlayer 14 and enable ADB debugging.";
+      deviceSummary.textContent = "Start LDPlayer (9 or 14) and enable ADB debugging.";
       connectionBadge.textContent = "DISCONNECTED";
       connectionBadge.className = "status-badge warn";
       refreshReadButton();
