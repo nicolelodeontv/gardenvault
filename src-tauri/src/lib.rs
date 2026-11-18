@@ -394,7 +394,7 @@ fn byte_diagnostics(bytes: &[u8]) -> ByteDiagnostics {
     }
 }
 
-fn probe_zstd_frame(bytes: &[u8], offset: usize) -> ZstdProbe {
+fn probe_zstd_frame(bytes: &[u8], offset: usize, remaining_budget: u64) -> ZstdProbe {
     let Some(payload) = bytes.get(offset..) else {
         return ZstdProbe {
             offset,
@@ -407,6 +407,19 @@ fn probe_zstd_frame(bytes: &[u8], offset: usize) -> ZstdProbe {
         };
     };
 
+    if remaining_budget == 0 {
+        return ZstdProbe {
+            offset,
+            status: "skipped-budget-exhausted".to_string(),
+            frame_content_size_bytes: None,
+            compressed_frame_size_bytes: None,
+            trailing_bytes_after_frame: None,
+            note: "The per-file decompression budget has been used.".to_string(),
+            decoded: None,
+        };
+    }
+
+    let output_limit = MAX_DECOMPRESSED_BYTES.min(remaining_budget);
     let declared_size = zstd_safe::get_frame_content_size(payload).ok().flatten();
     let frame_size = zstd_safe::find_frame_compressed_size(payload).ok();
 
@@ -434,20 +447,20 @@ fn probe_zstd_frame(bytes: &[u8], offset: usize) -> ZstdProbe {
         };
     }
 
-    if declared_size.is_some_and(|size| size > MAX_DECOMPRESSED_BYTES) {
+    if declared_size.is_some_and(|size| size > output_limit) {
         return ZstdProbe {
             offset,
             status: "skipped-size-limit".to_string(),
             frame_content_size_bytes: declared_size,
             compressed_frame_size_bytes: Some(frame_size),
             trailing_bytes_after_frame: Some(payload.len() - frame_size),
-            note: format!("Declared output exceeds the {} MiB inspection cap.", MAX_DECOMPRESSED_BYTES / (1024 * 1024)),
+            note: format!("Declared output exceeds the remaining {} MiB per-file inspection budget.", output_limit / (1024 * 1024)),
             decoded: None,
         };
     }
 
     let frame = &payload[..frame_size];
-    let decoder = match zstd::stream::read::Decoder::new(Cursor::new(frame)) {
+    let mut decoder = match zstd::stream::read::Decoder::new(Cursor::new(frame)) {
         Ok(decoder) => decoder.single_frame(),
         Err(error) => {
             return ZstdProbe {
@@ -461,17 +474,28 @@ fn probe_zstd_frame(bytes: &[u8], offset: usize) -> ZstdProbe {
             };
         }
     };
+    if let Err(error) = decoder.window_log_max(26) {
+        return ZstdProbe {
+            offset,
+            status: "decoder-limit-failed".to_string(),
+            frame_content_size_bytes: declared_size,
+            compressed_frame_size_bytes: Some(frame_size),
+            trailing_bytes_after_frame: Some(payload.len() - frame_size),
+            note: format!("Could not apply the 64 MiB Zstandard window limit: {error}"),
+            decoded: None,
+        };
+    }
 
     let mut output = Vec::new();
-    let mut limited = decoder.take(MAX_DECOMPRESSED_BYTES + 1);
+    let mut limited = decoder.take(output_limit + 1);
     match limited.read_to_end(&mut output) {
-        Ok(_) if output.len() as u64 > MAX_DECOMPRESSED_BYTES => ZstdProbe {
+        Ok(_) if output.len() as u64 > output_limit => ZstdProbe {
             offset,
             status: "output-limit-exceeded".to_string(),
             frame_content_size_bytes: declared_size,
             compressed_frame_size_bytes: Some(frame_size),
             trailing_bytes_after_frame: Some(payload.len() - frame_size),
-            note: format!("Decoded output exceeded the {} MiB inspection cap.", MAX_DECOMPRESSED_BYTES / (1024 * 1024)),
+            note: format!("Decoded output exceeded the remaining {} MiB per-file budget.", output_limit / (1024 * 1024)),
             decoded: None,
         },
         Ok(_) => {
@@ -509,9 +533,17 @@ fn inspect_bytes(bytes: &[u8]) -> (ByteDiagnostics, Vec<String>, Vec<String>, us
     let zstd_offsets = find_signature_offsets(bytes, ZSTD_MAGIC);
     let header_words = plxe_header_words(bytes, &plxe_offsets, &zstd_offsets);
     let attempted = zstd_offsets.len().min(MAX_ZSTD_PROBES);
-    let probes = zstd_offsets.iter().take(attempted)
-        .map(|offset| probe_zstd_frame(bytes, *offset))
-        .collect::<Vec<_>>();
+    let mut remaining_budget = MAX_DECOMPRESSED_BYTES;
+    let mut probes = Vec::new();
+    for offset in zstd_offsets.iter().take(attempted) {
+        let probe = probe_zstd_frame(bytes, *offset, remaining_budget);
+        if let Some(decoded) = probe.decoded.as_ref() {
+            remaining_budget = remaining_budget.saturating_sub(decoded.size_bytes as u64);
+        } else if probe.status == "output-limit-exceeded" {
+            remaining_budget = 0;
+        }
+        probes.push(probe);
+    }
     let decoded_size_matches = plxe_header_decoded_size_matches(bytes, &plxe_offsets, &probes);
     (byte_diagnostics(bytes), header_words, decoded_size_matches, zstd_offsets.len() - attempted, probes)
 }
@@ -893,7 +925,7 @@ mod tests {
         let frame_offset = bytes.len();
         bytes.extend_from_slice(&compressed);
         bytes.extend_from_slice(b"trailing-footer");
-        let probe = probe_zstd_frame(&bytes, frame_offset);
+        let probe = probe_zstd_frame(&bytes, frame_offset, MAX_DECOMPRESSED_BYTES);
         assert_eq!(probe.status, "decoded-cleanly");
         assert_eq!(probe.frame_content_size_bytes, Some(original.len() as u64));
         assert_eq!(probe.compressed_frame_size_bytes, Some(compressed.len()));
