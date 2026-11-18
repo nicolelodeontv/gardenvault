@@ -99,6 +99,7 @@ function renderVaults(vaults) {
         const details = report.files.map(file => {
           const embedded = (file.embeddedSignatures || []).join("\n  ");
           const headerWords = (file.plxeHeaderWords || []).join("\n  ") || "No PLXE header fields found";
+          const decodedSizeMatches = (file.plxeHeaderDecodedSizeMatches || []).join("\n  ") || "No PLXE words matched a successfully decoded output size";
           const zstd = (file.zstdProbes || []).map(probe => {
             const frameSize = probe.compressedFrameSizeBytes == null ? "unknown" : formatBytes(probe.compressedFrameSizeBytes);
             const declared = probe.frameContentSizeBytes == null ? "not declared" : formatBytes(probe.frameContentSizeBytes);
@@ -126,6 +127,8 @@ Embedded signatures (whole file):
   ${embedded || "No signature hits"}
 PLXE little-endian words:
   ${headerWords}
+PLXE words matching decoded sizes:
+  ${decodedSizeMatches}
 Zstandard probes: ${file.zstdCandidatesAttempted}/${file.zstdCandidatesTotal} attempted · ${file.zstdCandidatesSkipped} skipped by safety cap
 ${zstd}`;
         }).join("\n\n");        status.textContent = `${details}${report.identicalFiles ? " · Both captured files are identical." : ""}`;
