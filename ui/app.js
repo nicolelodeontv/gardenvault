@@ -96,6 +96,10 @@ function renderVaults(vaults) {
       button.disabled = true; status.textContent = "Decrypting in memory and analyzing binary structure…"; status.className = "vault-row-status";
       try {
         const report = await invoke("inspect_vault", { fileName, passphrase });
+        const deviceCaptureAttested = report.captureIntegrity === "device-stat-sha256-v1";
+        const captureIntegritySummary = deviceCaptureAttested
+          ? "Capture transfer attestation: device stat size and SHA-256 matched the received bytes."
+          : "Capture transfer attestation: unavailable for this older vault; only the encrypted vault payload is being integrity-checked.";
         const details = report.files.map(file => {
           const embedded = (file.embeddedSignatures || []).join("\n  ");
           const headerWords = (file.plxeHeaderWords || []).join("\n  ") || "No PLXE header fields found";
@@ -133,7 +137,7 @@ Frame size: ${frameSize} · declared output: ${declared} · observed output: ${o
 ${probe.note}
 ${decoded}`;
           }).join("\n\n") || "No Zstandard candidates found";
-          return `${file.name}: ${file.detectedFormat} · SHA-256 verified
+          return `${file.name}: ${file.detectedFormat} · vault payload SHA-256 matches stored metadata
 Size: ${Number(file.sizeBytes).toLocaleString()} bytes · mod 16: ${file.sizeMod16} · mod 512: ${file.sizeMod512} · mod 4096: ${file.sizeMod4096}
 Entropy (whole): ${Number(file.entropyBitsPerByte).toFixed(3)} bits/byte · ${file.entropyAssessment}
 Entropy (first 256): ${Number(file.header256EntropyBitsPerByte).toFixed(3)} · remainder: ${Number(file.bodyEntropyAfter256BitsPerByte).toFixed(3)} · tail 256: ${Number(file.tail256EntropyBitsPerByte).toFixed(3)}
@@ -148,7 +152,7 @@ PLXE words matching decoded sizes:
   ${decodedSizeMatches}
 Zstandard candidates: ${file.zstdCandidatesAttempted} attempted / ${file.zstdCandidatesTotal} signatures · ${file.zstdCandidatesSkipped} skipped by 32-attempt cap · ${file.zstdCandidatesOverlappingSkipped} nested/overlapping signatures skipped
 ${zstd}`;
-        }).join("\n\n");        status.textContent = `${details}${report.identicalFiles ? " · All captured files are byte-for-byte identical." : ""}`;
+        }).join("\n\n");        status.textContent = `${captureIntegritySummary}\n\n${details}${report.identicalFiles ? " · All captured files are byte-for-byte identical." : ""}`;
         status.className = "vault-row-status success";
       } catch (error) { status.textContent = String(error); status.className = "vault-row-status error"; }
       finally { button.disabled = false; if (inspectPassphraseInput) inspectPassphraseInput.value = ""; }
@@ -188,9 +192,12 @@ async function refreshVaults() {
   }
 }
 function renderResult(result) {
-  const cards = result.files.map(file => `<div class="file-card"><small>CAPTURED FILE</small><strong>${escapeHtml(file.name)}</strong><small>${Number(file.sizeBytes).toLocaleString()} bytes</small><code>SHA-256: ${escapeHtml(file.sha256)}</code></div>`).join("");
+  const cards = result.files.map(file => `<div class="file-card"><small>CAPTURED FILE</small><strong>${escapeHtml(file.name)}</strong><small>${Number(file.sizeBytes).toLocaleString()} bytes</small><code>Device SHA-256 matched: ${escapeHtml(file.sha256)}</code></div>`).join("");
+  const missingOptional = (result.missingOptionalFiles || []).length
+    ? `<div class="path-line">Not present: ${(result.missingOptionalFiles || []).map(escapeHtml).join(", ")}. No file entry was stored.</div>`
+    : "";
   resultPanel.className = "panel result-panel";
-  resultPanel.innerHTML = `<div style="width:100%"><div class="section-head result-top"><div><h3>Encrypted snapshot created</h3><p>Device ${escapeHtml(result.deviceSerial)} · ${escapeHtml(result.capturedAt)}</p></div><span class="status-badge ok">ENCRYPTED</span></div><div class="result-grid">${cards}</div><div class="path-line">Vault file: <code>${escapeHtml(result.vaultPath)}</code></div></div>`;
+  resultPanel.innerHTML = `<div style="width:100%"><div class="section-head result-top"><div><h3>Encrypted snapshot created</h3><p>Device ${escapeHtml(result.deviceSerial)} · ${escapeHtml(result.capturedAt)}</p></div><span class="status-badge ok">ENCRYPTED</span></div><div class="result-grid">${cards}</div><div class="path-line">Device-reported stat size and SHA-256 matched the received bytes before encryption.</div>${missingOptional}<div class="path-line">Vault file: <code>${escapeHtml(result.vaultPath)}</code></div></div>`;
 }
 refreshButton.addEventListener("click", refreshDevices);
 deviceSelect.addEventListener("change", refreshReadButton);
