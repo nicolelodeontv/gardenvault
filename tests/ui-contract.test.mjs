@@ -19,7 +19,8 @@ test("frontend invokes only the fixed native profile commands", () => {
   assert.match(js, /invoke\("inspect_vault"/);
   assert.match(js, /entropyAssessment/);
   assert.match(js, /zstdProbes/);
-  assert.match(js, /plxeHeaderWords/);\n  assert.match(js, /plxeHeaderDecodedSizeMatches/);
+  assert.match(js, /plxeHeaderWords/);
+  assert.match(js, /plxeHeaderDecodedSizeMatches/);
   assert.doesNotMatch(js, /localStorage|sessionStorage/);
 });
 test("encrypted backup browser exposes refresh and export controls", () => {
