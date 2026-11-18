@@ -306,7 +306,9 @@ fn plxe_header_words(bytes: &[u8], plxe_offsets: &[usize], zstd_offsets: &[usize
     let mut words = Vec::new();
     for &plxe_offset in plxe_offsets.iter().take(32) {
         let Some(header_start) = plxe_offset.checked_add(4) else { continue };
-        let header_end = bytes.len().min(plxe_offset.saturating_add(36));
+        let header_limit = bytes.len().min(plxe_offset.saturating_add(36));
+        let payload_start = zstd_offsets.iter().copied().filter(|offset| *offset >= header_start).min();
+        let header_end = payload_start.unwrap_or(header_limit).min(header_limit);
         let mut field_offset = header_start;
         while field_offset.saturating_add(4) <= header_end {
             let value = u32::from_le_bytes([
@@ -337,14 +339,16 @@ fn plxe_header_words(bytes: &[u8], plxe_offsets: &[usize], zstd_offsets: &[usize
     words
 }
 
-fn plxe_header_decoded_size_matches(bytes: &[u8], plxe_offsets: &[usize], probes: &[ZstdProbe]) -> Vec<String> {
+fn plxe_header_decoded_size_matches(bytes: &[u8], plxe_offsets: &[usize], zstd_offsets: &[usize], probes: &[ZstdProbe]) -> Vec<String> {
     let mut matches = Vec::new();
     let decoded_frames = probes.iter()
         .filter_map(|probe| probe.decoded.as_ref().map(|decoded| (probe.offset, decoded.size_bytes)));
     let decoded_frames = decoded_frames.collect::<Vec<_>>();
     for &plxe_offset in plxe_offsets.iter().take(32) {
         let Some(header_start) = plxe_offset.checked_add(4) else { continue };
-        let header_end = bytes.len().min(plxe_offset.saturating_add(36));
+        let header_limit = bytes.len().min(plxe_offset.saturating_add(36));
+        let payload_start = zstd_offsets.iter().copied().filter(|offset| *offset >= header_start).min();
+        let header_end = payload_start.unwrap_or(header_limit).min(header_limit);
         let mut field_offset = header_start;
         while field_offset.saturating_add(4) <= header_end {
             let value = u32::from_le_bytes([
@@ -544,7 +548,7 @@ fn inspect_bytes(bytes: &[u8]) -> (ByteDiagnostics, Vec<String>, Vec<String>, us
         }
         probes.push(probe);
     }
-    let decoded_size_matches = plxe_header_decoded_size_matches(bytes, &plxe_offsets, &probes);
+    let decoded_size_matches = plxe_header_decoded_size_matches(bytes, &plxe_offsets, &zstd_offsets, &probes);
     (byte_diagnostics(bytes), header_words, decoded_size_matches, zstd_offsets.len() - attempted, probes)
 }
 
