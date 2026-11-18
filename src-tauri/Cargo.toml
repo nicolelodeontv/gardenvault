@@ -24,7 +24,7 @@ base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 zstd = "0.14.4"
 zstd-safe = "8.3.0"
-rusqlite = { version = "0.37", features = ["bundled", "serialize"] }
+rusqlite = { version = "0.37", features = ["bundled", "serialize", "hooks", "load_extension"] }
 
 [target.'cfg(windows)'.dependencies]
 rfd = { version = "0.15.4", default-features = false }
