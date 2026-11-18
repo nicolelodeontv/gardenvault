@@ -34,8 +34,10 @@ impl CaptureTempGuard<'_> {
             return Ok(());
         }
 
-        let cleanup_command = root_cleanup_capture_command(&self.sdcard_path, &self.fallback_path)?;
-        let remote_result = run_adb_for_device(self.adb, self.serial, &["shell", &cleanup_command]);
+        let remote_result = match root_cleanup_capture_command(&self.sdcard_path, &self.fallback_path) {
+            Ok(cleanup_command) => run_adb_for_device(self.adb, self.serial, &["shell", &cleanup_command]),
+            Err(error) => Err(error),
+        };
         let mut errors = Vec::new();
         match remote_result {
             Ok(output) if output.status.success() => {}
@@ -55,7 +57,7 @@ impl CaptureTempGuard<'_> {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => errors.push(format!("Could not remove host temporary file: {error}")),
         }
-        match fs::remove_dir(&self.host_dir) {
+        match fs::remove_dir_all(&self.host_dir) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => errors.push(format!("Could not remove host temporary folder: {error}")),
