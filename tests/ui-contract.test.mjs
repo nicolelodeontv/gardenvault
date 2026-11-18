@@ -15,12 +15,12 @@ test("frontend invokes only the fixed native profile commands", () => {
   assert.match(js, /invoke\("list_devices"\)/);
   assert.match(js, /invoke\("read_profile"/);
   assert.match(js, /invoke\("list_vaults"\)/);
-  assert.match(js, /invoke\("export_vault"/);
+  assert.match(js, /invoke\("export_vault"/);\n  assert.match(js, /invoke\("inspect_vault"/);
   assert.doesNotMatch(js, /localStorage|sessionStorage/);
 });
 test("encrypted backup browser exposes refresh and export controls", () => {
   assert.match(html, /id="refreshVaults"/);
-  assert.match(html, /id="vaultList"/);
+  assert.match(html, /id="vaultList"/);\n  assert.match(html, /id="inspectPassphrase"/);\n  assert.match(js, /detectedFormat/);
   assert.match(js, /data-file-name/);
 });
 test("passphrase is cleared after a capture attempt", () => {
