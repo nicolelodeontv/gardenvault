@@ -235,15 +235,15 @@ fn find_embedded_signatures(bytes: &[u8]) -> Vec<String> {
     const SCAN_LIMIT: usize = 64 * 1024;
     let sample = &bytes[..bytes.len().min(SCAN_LIMIT)];
     let signatures: [(&str, &[u8]); 9] = [
-        ("SQLite", b"SQLite format 3\\0"),
-        ("ZIP", b"PK\\x03\\x04"),
-        ("GZIP", b"\\x1f\\x8b"),
-        ("Zstandard", b"\\x28\\xb5\\x2f\\xfd"),
-        ("LZ4 frame", b"\\x04\\x22\\x4d\\x18"),
-        ("PNG", b"\\x89PNG\\r\\n\\x1a\\n"),
-        ("JPEG", b"\\xff\\xd8\\xff"),
-        ("zlib candidate", b"\\x78\\x9c"),
-        ("zlib candidate", b"\\x78\\xda"),
+        ("SQLite", b"SQLite format 3\0"),
+        ("ZIP", b"PK\x03\x04"),
+        ("GZIP", b"\x1f\x8b"),
+        ("Zstandard", b"\x28\xb5\x2f\xfd"),
+        ("LZ4 frame", b"\x04\x22\x4d\x18"),
+        ("PNG", b"\x89PNG\r\n\x1a\n"),
+        ("JPEG", b"\xff\xd8\xff"),
+        ("zlib candidate", b"\x78\x9c"),
+        ("zlib candidate", b"\x78\xda"),
     ];
     let mut found = Vec::new();
     for (label, signature) in signatures {
@@ -602,7 +602,7 @@ mod tests {
         let all_values = (0_u8..=255).collect::<Vec<_>>();
         assert!((byte_entropy(&all_values) - 8.0).abs() < 0.0001);
         assert_eq!(unique_byte_count(&all_values), 256);
-        assert!(find_embedded_signatures(b"prefix\\x28\\xb5\\x2f\\xfdpayload").iter().any(|s| s.contains("Zstandard")));
+        assert!(find_embedded_signatures(b"prefix\x28\xb5\x2f\xfdpayload").iter().any(|s| s.contains("Zstandard")));
         assert!(entropy_assessment(7.99).contains("encryption or compression"));
     }
 
