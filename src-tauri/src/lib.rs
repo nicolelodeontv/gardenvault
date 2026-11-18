@@ -643,20 +643,35 @@ fn inspect_sqlite_readonly(bytes: &[u8]) -> Option<SqliteDiagnostics> {
 
 fn find_zstd_skippable_frames(bytes: &[u8]) -> Vec<ZstdSkippableFrame> {
     let mut frames = Vec::new();
-    if bytes.len() < 8 {
+    if bytes.len() < 4 {
         return frames;
     }
-    for offset in 0..=bytes.len() - 8 {
+    for offset in 0..=bytes.len() - 4 {
         let magic = u32::from_le_bytes([
             bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3],
         ]);
         if !(ZSTD_SKIPPABLE_MAGIC_BASE..=ZSTD_SKIPPABLE_MAGIC_BASE + 15).contains(&magic) {
             continue;
         }
+
+        let remaining = bytes.len() - offset;
+        if remaining < 8 {
+            frames.push(ZstdSkippableFrame {
+                offset,
+                magic_hex: hex::encode(&bytes[offset..offset + 4]),
+                frame_id: (magic - ZSTD_SKIPPABLE_MAGIC_BASE) as u8,
+                declared_payload_bytes: 0,
+                available_payload_bytes: 0,
+                status: "incomplete-skippable-header".to_string(),
+                note: "Zstandard skippable magic is present, but the 4-byte payload-length field is truncated.".to_string(),
+            });
+            continue;
+        }
+
         let declared_payload_bytes = u32::from_le_bytes([
             bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7],
         ]) as usize;
-        let available_payload_bytes = bytes.len() - offset - 8;
+        let available_payload_bytes = remaining - 8;
         let complete = declared_payload_bytes <= available_payload_bytes;
         frames.push(ZstdSkippableFrame {
             offset,
@@ -1395,9 +1410,11 @@ mod tests {
         bytes.extend_from_slice(&0x184D_2A5F_u32.to_le_bytes());
         bytes.extend_from_slice(&32_u32.to_le_bytes());
         bytes.extend_from_slice(b"xy");
+        let header_only_offset = bytes.len();
+        bytes.extend_from_slice(&0x184D_2A51_u32.to_le_bytes());
 
         let frames = find_zstd_skippable_frames(&bytes);
-        assert_eq!(frames.len(), 2);
+        assert_eq!(frames.len(), 3);
         assert_eq!(frames[0].offset, complete_offset);
         assert_eq!(frames[0].frame_id, 0);
         assert_eq!(frames[0].declared_payload_bytes, 3);
@@ -1406,6 +1423,8 @@ mod tests {
         assert_eq!(frames[1].frame_id, 15);
         assert_eq!(frames[1].available_payload_bytes, 2);
         assert_eq!(frames[1].status, "incomplete-skippable-frame");
+        assert_eq!(frames[2].offset, header_only_offset);
+        assert_eq!(frames[2].status, "incomplete-skippable-header");
         assert!(find_signature_offsets(&bytes, ZSTD_MAGIC).is_empty());
     }
 
