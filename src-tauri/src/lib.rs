@@ -2049,9 +2049,9 @@ mod tests {
 
     #[test]
     fn crlf_capture_header_is_accepted_without_changing_binary_payload() {
-        let binary = b"garden\\r\\nstate\\x00data";
+        let binary = b"garden\r\nstate\x00data";
         let header = format!(
-            "__GARDENVAULT_CAPTURE__:{}:{}\\r\\n",
+            "__GARDENVAULT_CAPTURE__:{}:{}\r\n",
             binary.len(),
             hash_hex(binary)
         );
