@@ -9,7 +9,8 @@ GardenVault is a local-first Windows desktop utility for reading Gardenscapes pr
 - Read the observed `GameData.db` and `GameData.db.bak` files after the game process exits.
 - Quote the full `su -c` command and use raw `adb exec-out` transfer so the file path is not parsed as a root user ID and binary bytes avoid terminal conversion.
 - Encrypt both files in memory with Argon2id + AES-256-GCM before writing a single `.gvault` file to local app data.
-- Browse locally stored encrypted snapshots and export byte-identical encrypted copies through the Windows Save As dialog.\n- Decrypt a selected snapshot only in memory after passphrase entry, verify each embedded file against its SHA-256 digest, and report conservative file-signature detection without writing or applying any game data.
+- Browse locally stored encrypted snapshots and export byte-identical encrypted copies through the Windows Save As dialog.
+- Decrypt a selected snapshot only in memory after passphrase entry, verify each embedded file against its SHA-256 digest, and report conservative file-signature detection without writing or applying any game data.
 - Never write into the Gardenscapes game directory.
 - No save data is sent to a cloud service.
 
