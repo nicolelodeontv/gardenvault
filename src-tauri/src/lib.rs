@@ -507,71 +507,133 @@ fn inspect_sqlite_wal(wal: Option<&[u8]>) -> SqliteWalDiagnostics {
     }
 }
 
+fn sqlite_diagnostics_failure(status: &str, note: String) -> SqliteDiagnostics {
+    SqliteDiagnostics {
+        opened_read_only: false,
+        status: status.to_string(),
+        sqlite_version: None,
+        schema_objects: Vec::new(),
+        quick_check: None,
+        wal: Some(inspect_sqlite_wal(None)),
+        note,
+    }
+}
+
 fn inspect_sqlite_readonly(bytes: &[u8]) -> Option<SqliteDiagnostics> {
     if !bytes.starts_with(b"SQLite format 3\0") {
         return None;
     }
 
-    let wal_mode_header = bytes.get(18).copied() == Some(2) || bytes.get(19).copied() == Some(2);
-    if wal_mode_header {
-        return Some(SqliteDiagnostics {
-            opened_read_only: false,
-            status: "wal-mode-needs-replay".to_string(),
-            sqlite_version: None,
-            schema_objects: Vec::new(),
-            quick_check: None,
-            wal: Some(inspect_sqlite_wal(None)),
-            note: "Database header indicates WAL journal mode; WAL pages are inspected separately and not replayed.".to_string(),
-        });
+    // Header bytes 18 and 19 are the SQLite read/write format versions.
+    // Version 2 indicates WAL mode: the main file alone may be stale.
+    let write_version = bytes.get(18).copied().unwrap_or_default();
+    let read_version = bytes.get(19).copied().unwrap_or_default();
+    if write_version == 2 || read_version == 2 {
+        return Some(sqlite_diagnostics_failure(
+            "wal-mode-main-file-only-may-be-stale",
+            format!(
+                "WAL-mode database, main file only, may be stale (read/write format versions: {read_version}/{write_version}). quick_check was skipped; any companion WAL is reported separately and is not replayed."
+            ),
+        ));
     }
 
     let mut connection = match Connection::open_in_memory() {
         Ok(connection) => connection,
-        Err(error) => {
-            return Some(SqliteDiagnostics {
-                opened_read_only: false,
-                status: "open-failed".to_string(),
-                sqlite_version: None,
-                schema_objects: Vec::new(),
-                quick_check: None,
-                wal: Some(inspect_sqlite_wal(None)),
-                note: String::new(),
-            }.with_note(format!("Could not create in-memory SQLite connection: {error}")));
-        }
+        Err(error) => return Some(sqlite_diagnostics_failure(
+            "open-failed",
+            format!("Could not create in-memory SQLite connection: {error}"),
+        )),
     };
+
+    if let Err(error) = connection.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true) {
+        return Some(sqlite_diagnostics_failure(
+            "defensive-config-failed",
+            format!("Could not enable SQLITE_DBCONFIG_DEFENSIVE: {error}"),
+        ));
+    }
+    if let Err(error) = connection.load_extension_disable() {
+        return Some(sqlite_diagnostics_failure(
+            "extension-disable-failed",
+            format!("Could not explicitly disable SQLite extension loading: {error}"),
+        ));
+    }
+    if let Err(error) = connection.execute_batch("PRAGMA query_only=ON; PRAGMA trusted_schema=OFF;") {
+        return Some(sqlite_diagnostics_failure(
+            "readonly-pragmas-failed",
+            format!("Could not enable query_only and trusted_schema protections: {error}"),
+        ));
+    }
     if let Err(error) = connection.deserialize_read_exact(rusqlite::MAIN_DB, Cursor::new(bytes), bytes.len(), true) {
+        return Some(sqlite_diagnostics_failure(
+            "readonly-open-failed",
+            format!("SQLite rejected the read-only in-memory database image: {error}"),
+        ));
+    }
+
+    // Bound all SQL inspection work, including quick_check and schema listing.
+    let deadline = Instant::now() + Duration::from_millis(SQLITE_QUERY_BUDGET_MS);
+    connection.progress_handler(1_000, Some(move || Instant::now() >= deadline));
+
+    let sqlite_version = connection
+        .query_row("SELECT sqlite_version()", [], |row| row.get::<_, String>(0))
+        .ok();
+    let quick_check_result = connection.query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0));
+    let quick_check = quick_check_result.as_ref().ok().cloned();
+    if let Err(error) = quick_check_result {
+        let timed_out = error.to_string().to_ascii_lowercase().contains("interrupt");
         return Some(SqliteDiagnostics {
-            opened_read_only: false,
-            status: "readonly-open-failed".to_string(),
-            sqlite_version: None,
+            opened_read_only: true,
+            status: if timed_out { "inspection-time-limit" } else { "quick-check-failed" }.to_string(),
+            sqlite_version,
             schema_objects: Vec::new(),
             quick_check: None,
             wal: Some(inspect_sqlite_wal(None)),
-            note: String::new(),
-        }.with_note(format!("SQLite rejected the read-only in-memory database image: {error}")));
+            note: format!(
+                "Read-only SQLite inspection stopped during quick_check ({} ms budget): {error}. No database writes were permitted.",
+                SQLITE_QUERY_BUDGET_MS
+            ),
+        });
     }
 
-    let sqlite_version = connection.query_row("SELECT sqlite_version()", [], |row| row.get::<_, String>(0)).ok();
-    let quick_check = connection.query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0)).ok();
     let mut schema_objects = Vec::new();
-    let schema_result = connection.prepare(
+    let mut schema_timed_out = false;
+    match connection.prepare(
         "SELECT name FROM sqlite_master WHERE type IN ('table','index','view','trigger') ORDER BY type,name"
-    );
-    if let Ok(mut statement) = schema_result {
-        if let Ok(rows) = statement.query_map([], |row| row.get::<_, String>(0)) {
-            for name in rows.flatten().take(100) {
-                schema_objects.push(name.chars().take(120).collect());
+    ) {
+        Ok(mut statement) => match statement.query_map([], |row| row.get::<_, String>(0)) {
+            Ok(rows) => {
+                for row in rows.take(100) {
+                    match row {
+                        Ok(name) => schema_objects.push(name.chars().take(120).collect()),
+                        Err(error) => {
+                            schema_timed_out = error.to_string().to_ascii_lowercase().contains("interrupt");
+                            break;
+                        }
+                    }
+                }
             }
-        }
+            Err(error) => schema_timed_out = error.to_string().to_ascii_lowercase().contains("interrupt"),
+        },
+        Err(error) => schema_timed_out = error.to_string().to_ascii_lowercase().contains("interrupt"),
     }
+
     Some(SqliteDiagnostics {
         opened_read_only: true,
-        status: if quick_check.as_deref() == Some("ok") { "opened-readonly-integrity-ok" } else { "opened-readonly" }.to_string(),
+        status: if schema_timed_out {
+            "inspection-time-limit".to_string()
+        } else if quick_check.as_deref() == Some("ok") {
+            "opened-readonly-integrity-ok".to_string()
+        } else {
+            "opened-readonly".to_string()
+        },
         sqlite_version,
         schema_objects,
         quick_check,
         wal: Some(inspect_sqlite_wal(None)),
-        note: "SQLite image was opened in memory with read-only deserialization; schema names and quick_check were queried without writes.".to_string(),
+        note: format!(
+            "SQLite image was deserialized read-only in memory; defensive mode and query_only were enabled, extension loading was explicitly disabled, and SQL inspection had a {} ms progress-handler budget. No database pages were written.",
+            SQLITE_QUERY_BUDGET_MS
+        ),
     })
 }
 
