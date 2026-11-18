@@ -637,6 +637,40 @@ fn inspect_sqlite_readonly(bytes: &[u8]) -> Option<SqliteDiagnostics> {
     })
 }
 
+fn find_zstd_skippable_frames(bytes: &[u8]) -> Vec<ZstdSkippableFrame> {
+    let mut frames = Vec::new();
+    if bytes.len() < 8 {
+        return frames;
+    }
+    for offset in 0..=bytes.len() - 8 {
+        let magic = u32::from_le_bytes([
+            bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3],
+        ]);
+        if !(ZSTD_SKIPPABLE_MAGIC_BASE..=ZSTD_SKIPPABLE_MAGIC_BASE + 15).contains(&magic) {
+            continue;
+        }
+        let declared_payload_bytes = u32::from_le_bytes([
+            bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7],
+        ]) as usize;
+        let available_payload_bytes = bytes.len() - offset - 8;
+        let complete = declared_payload_bytes <= available_payload_bytes;
+        frames.push(ZstdSkippableFrame {
+            offset,
+            magic_hex: hex::encode(&bytes[offset..offset + 4]),
+            frame_id: (magic - ZSTD_SKIPPABLE_MAGIC_BASE) as u8,
+            declared_payload_bytes,
+            available_payload_bytes,
+            status: if complete { "unvalidated-complete-skippable-frame" } else { "incomplete-skippable-frame" }.to_string(),
+            note: if complete {
+                "Zstandard skippable frame; payload was not decoded and does not count toward the normal-frame attempt budget.".to_string()
+            } else {
+                "Zstandard skippable-frame header was found, but its declared payload extends beyond the captured file.".to_string()
+            },
+        });
+    }
+    frames
+}
+
 fn byte_diagnostics(bytes: &[u8]) -> ByteDiagnostics {
     let header_len = bytes.len().min(256);
     let tail_start = bytes.len().saturating_sub(256);
