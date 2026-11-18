@@ -10,6 +10,9 @@
 - [x] Parse PLXE-adjacent little-endian u32 fields and compare against file/payload lengths
 - [x] Report whole-file, first-256-byte, remainder, and tail entropy
 - [x] Report size modulo 16, 512, and 4096, plus the last 32 bytes in hex
+- [x] Compare PLXE u32 fields against both compressed payload lengths and decoded frame output sizes
+- [x] Share a 64 MiB decompression budget across all candidate frames in each file
+- [x] Cap Zstandard back-reference windows at 64 MiB
 - [x] Keep all inspection read-only and in memory, with bounded decompression output
 
 ## Next milestones
