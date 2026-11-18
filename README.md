@@ -18,7 +18,7 @@ GardenVault is a local-first Windows desktop utility for reading Gardenscapes pr
 
 The supplied save files have not been identified as standard SQLite. The app currently reports file sizes, SHA-256 hashes, basic file signatures, and statistical binary diagnostics; it does not decode or edit coins, items, or level fields. Backup export copies the encrypted container unchanged and does not restore it into the game. Editing and live Apply remain disabled pending a verified format adapter.
 
-The RC5 capture-command fix addresses the reported LDPlayer error `Unknown id: /data/user/0/...`. It still needs a fresh capture test on the target LDPlayer installation to confirm that the assumed files exist at the configured path.
+A 2022 community reverse-engineering post describes `PLXE` + Zstandard wrapping for certain Playrix XML/assets. RC7 scans for those signatures, but this is not yet evidence that `GameData.db` uses that wrapper. See [the format discussion](https://www.zenhax.com/viewtopic.php@t=16964.html).\n\nPlayrix support states that game progress is saved automatically while connected to the internet. Treat the local file as a captured local artifact, not necessarily the authoritative source of coins, boosters, or level progress; account-synced progress may be restored from Playrix services. See [Playrix's progress article](https://playrix.helpshift.com/hc/en/5-gardenscapes/faq/718-saving-game-progress/).\n\nThe RC5 capture-command fix addresses the reported LDPlayer error `Unknown id: /data/user/0/...`. It still needs a fresh capture test on the target LDPlayer installation to confirm that the assumed files exist at the configured path.
 
 ## Build on Windows
 
