@@ -364,8 +364,9 @@ fn plxe_header_words(bytes: &[u8], plxe_offsets: &[usize], zstd_offsets: &[usize
                 matches.push("matches compressed Zstandard frame length");
             }
             let match_text = if matches.is_empty() { String::new() } else { format!(" ({})", matches.join(", ")) };
+            let word_index = ((field_offset - header_start) / 4) + 1;
             words.push(format!(
-                "PLXE@0x{plxe_offset:X} +0x{:02X}: u32le={} (0x{value:08X}){match_text}",
+                "PLXE@0x{plxe_offset:X} word {word_index} (+0x{:02X}): u32le={} (0x{value:08X}){match_text}",
                 field_offset - plxe_offset,
                 value
             ));
@@ -395,8 +396,9 @@ fn plxe_header_decoded_size_matches(bytes: &[u8], plxe_offsets: &[usize], zstd_o
             ]) as usize;
             for (frame_offset, decoded_size) in &decoded_frames {
                 if value == *decoded_size {
+                    let word_index = ((field_offset - header_start) / 4) + 1;
                     matches.push(format!(
-                        "PLXE@0x{plxe_offset:X} +0x{:02X} equals decoded size {} from Zstandard@0x{frame_offset:X}",
+                        "PLXE@0x{plxe_offset:X} word {word_index} (+0x{:02X}) equals decoded size {} from Zstandard@0x{frame_offset:X}",
                         field_offset - plxe_offset,
                         decoded_size
                     ));
@@ -609,16 +611,6 @@ fn probe_zstd_frame(bytes: &[u8], offset: usize, remaining_budget: u64) -> ZstdP
         };
     };
 
-    if remaining_budget == 0 {
-        return ZstdProbe {
-            offset, status: "limit-hit".to_string(), frame_content_size_bytes: None,
-            compressed_frame_size_bytes: None, trailing_bytes_after_frame: None,
-            observed_output_bytes: None,
-            note: "The cumulative per-file decompression budget has been exhausted.".to_string(),
-            decoded: None,
-        };
-    }
-
     let output_limit = MAX_DECOMPRESSED_BYTES.min(remaining_budget);
     let declared_size = zstd_safe::get_frame_content_size(payload).ok().flatten();
     let frame_size = match zstd_safe::find_frame_compressed_size(payload) {
@@ -639,6 +631,17 @@ fn probe_zstd_frame(bytes: &[u8], offset: usize, remaining_budget: u64) -> ZstdP
             compressed_frame_size_bytes: None, trailing_bytes_after_frame: None,
             observed_output_bytes: None,
             note: "Zstandard magic was found, but the reported frame boundary is invalid.".to_string(),
+            decoded: None,
+        };
+    }
+
+    if output_limit == 0 {
+        return ZstdProbe {
+            offset, status: "limit-hit".to_string(), frame_content_size_bytes: declared_size,
+            compressed_frame_size_bytes: Some(frame_size),
+            trailing_bytes_after_frame: Some(payload.len() - frame_size),
+            observed_output_bytes: None,
+            note: "The cumulative per-file decompression budget is exhausted; frame boundary was measured but the frame was not decompressed.".to_string(),
             decoded: None,
         };
     }
