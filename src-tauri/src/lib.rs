@@ -1730,6 +1730,22 @@ mod tests {
         let snapshot: VaultSnapshot = serde_json::from_value(old_snapshot)
             .expect("legacy snapshots omit captureIntegrity");
         assert!(snapshot.capture_integrity.is_none());
+        assert!(snapshot.missing_optional_files.is_empty());
+
+        let current_snapshot = VaultSnapshot {
+            schema_version: 1,
+            product: "GardenVault".to_string(),
+            package: GAME_PACKAGE.to_string(),
+            device_serial: "emulator-5556".to_string(),
+            captured_at: "2026-11-18T14:58:25Z".to_string(),
+            capture_integrity: Some("device-stat-sha256-v1".to_string()),
+            missing_optional_files: vec![GAME_WAL_FILE.to_string()],
+            files: Vec::new(),
+        };
+        let current_metadata = serde_json::to_value(current_snapshot).expect("serialize current snapshot metadata");
+        assert_eq!(current_metadata["captureIntegrity"], "device-stat-sha256-v1");
+        assert_eq!(current_metadata["missingOptionalFiles"][0], GAME_WAL_FILE);
+        assert!(current_metadata["files"].as_array().expect("file array").is_empty());
     }
 
     #[test]
