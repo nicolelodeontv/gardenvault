@@ -36,7 +36,7 @@
     </section>
     <section class="section-head lower-head"><div><h3>Latest snapshot</h3><p>Metadata only. The save contents remain encrypted.</p></div></section>
     <section id="resultPanel" class="panel result-panel empty"><div class="empty-icon">◇</div><div><strong>No snapshot yet</strong><p>Connect LDPlayer, enter a vault passphrase, and select Read Profile.</p></div></section>
-    <section class="section-head vault-heading"><div><h3>Encrypted backups</h3><p>Browse local snapshots and export encrypted copies.</p></div><button id="refreshVaults" class="button secondary" type="button">↻ Refresh list</button></section>
+    <section class="section-head vault-heading"><div><h3>Encrypted backups</h3><p>Inspect a snapshot locally or export its encrypted copy.</p></div><div class="vault-tools"><label for="inspectPassphrase">Vault passphrase</label><input id="inspectPassphrase" type="password" autocomplete="off" maxlength="256" placeholder="Enter to inspect"><button id="refreshVaults" class="button secondary" type="button">↻ Refresh list</button></div></section>
     <section id="vaultList" class="panel vault-list"><div class="vault-empty">Loading encrypted backups…</div></section>
     <section class="notice"><span>!</span><div><strong>Editing is not enabled yet</strong><p>The Gardenscapes save format is still under investigation. GardenVault currently captures and encrypts original files without changing game progress.</p></div></section>
   </main>
