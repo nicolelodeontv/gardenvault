@@ -23,3 +23,6 @@ A `.gvault` file contains a 7-byte `GVLT001` header, 16-byte random salt, 12-byt
 - The assumed save-file locations still need to be validated against a real LDPlayer 14 installation.
 
 Never share the vault passphrase or commit `.gvault` files to Git.
+
+## Snapshot inspection
+Authenticated inspection decrypts the selected vault in memory, validates each embedded file's size and SHA-256 digest, and computes only local statistics and signature matches. It does not write extracted save files, change the original game directory, or transmit data. Entropy is an indicator only: high entropy can be caused by encryption or compression and is not proof of either.
