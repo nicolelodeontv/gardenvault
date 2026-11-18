@@ -1008,7 +1008,7 @@ fn inspect_vault(app: AppHandle, file_name: String, passphrase: String) -> Resul
         .map(|(_, bytes)| bytes.as_slice());
     let mut inspected = Vec::new();
     for (name, bytes) in decoded_files {
-        let (mut diagnostics, header_words, decoded_size_matches, zstd_candidates_attempted, zstd_candidates_skipped, zstd_candidates_overlapping_skipped, zstd_probes) = inspect_bytes(&bytes);
+        let (mut diagnostics, header_words, decoded_size_matches, zstd_candidates_attempted, zstd_candidates_skipped, zstd_candidates_overlapping_skipped, mut zstd_probes) = inspect_bytes(&bytes);
         if name == "GameData.db" {
             if let Some(sqlite) = diagnostics.sqlite_database.as_mut() {
                 sqlite.wal = Some(inspect_sqlite_wal(wal_bytes));
@@ -1017,6 +1017,16 @@ fn inspect_vault(app: AppHandle, file_name: String, passphrase: String) -> Resul
                 } else {
                     " No companion GameData.db-wal file was present at capture time."
                 });
+                for probe in &mut zstd_probes {
+                    if let Some(decoded_sqlite) = probe.decoded.as_mut().and_then(|decoded| decoded.sqlite_database.as_mut()) {
+                        decoded_sqlite.wal = Some(inspect_sqlite_wal(wal_bytes));
+                        decoded_sqlite.note.push_str(if wal_bytes.is_some() {
+                            " A companion WAL was captured and checked separately; its pages were not replayed."
+                        } else {
+                            " No companion WAL was present in this snapshot."
+                        });
+                    }
+                }
             }
         }
         inspected.push(InspectedFile {
@@ -1153,7 +1163,7 @@ mod tests {
             2 => 2,
             _ => 4,
         };
-        let fcs_offset = 5 + usize::from(!single_segment) + dict_len;
+        let fcs_offset = 5 + (if single_segment { 0 } else { 1 }) + dict_len;
         frame.splice(fcs_offset..fcs_offset + old_fcs_len, desired_size.to_le_bytes());
         frame[4] = (descriptor & 0x3f) | 0x80;
     }
