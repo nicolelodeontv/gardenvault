@@ -928,7 +928,7 @@ mod tests {
     fn plxe_word_can_match_the_decompressed_zstd_size() {
         let original = b"decoded payload with a known length";
         let compressed = zstd::stream::encode_all(Cursor::new(original), 1).expect("encode frame");
-        let mut bytes = b"PLXE\\0\\0\\0\\0\\0\\0\\0\\0".to_vec();
+        let mut bytes = b"PLXE\0\0\0\0\0\0\0\0".to_vec();
         let frame_offset = bytes.len();
         bytes.extend_from_slice(&compressed);
         bytes[4..8].copy_from_slice(&(compressed.len() as u32).to_le_bytes());
