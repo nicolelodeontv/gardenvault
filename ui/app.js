@@ -103,7 +103,7 @@ Entropy: ${Number(file.entropyBitsPerByte).toFixed(3)} bits/byte · ${file.entro
 Printable ASCII: ${Number(file.printableAsciiPercent).toFixed(1)}% · zero bytes: ${Number(file.zeroBytePercent).toFixed(1)}% · unique byte values: ${file.uniqueByteValues}/256
 Header (first 32 bytes): ${file.signatureHex}
 Embedded signatures: ${embedded}`;
-        }).join("\\n\\n");
+        }).join("\n\n");
         status.textContent = `${details}${report.identicalFiles ? " · Both captured files are identical." : ""}`;
         status.className = "vault-row-status success";
       } catch (error) { status.textContent = String(error); status.className = "vault-row-status error"; }
