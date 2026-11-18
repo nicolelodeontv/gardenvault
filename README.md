@@ -5,10 +5,10 @@ GardenVault is a local-first Windows desktop utility for reading Gardenscapes pr
 ## v1.0.0-rc.9 — Read-only binary forensics
 
 - Detect connected LDPlayer emulators through ADB and verify the Gardenscapes package and root availability.
-- Capture `GameData.db` and `GameData.db.bak` only after confirming the game process is stopped. GardenVault does not force-stop the game; close it manually so its save can finish. If `GameData.db-wal` exists, compare main-database hashes before/after the WAL capture and compare WAL hashes from reads immediately before and after the selected WAL snapshot; reject the snapshot if either file changes. This is a consistency guard, not a filesystem-atomic snapshot.
+- Capture `GameData.db` and `GameData.db.bak` only after confirming the game process is stopped. GardenVault does not force-stop the game; close it manually so its save can finish. For each file, the emulator reports `stat -c %s` and its own `sha256sum` before streaming bytes through `adb exec-out`; GardenVault rejects a size mismatch, digest mismatch, zero-length file, root-shell failure, or incomplete transfer. The optional `GameData.db-wal` is captured only when an explicit missing/present check confirms it; if absent, it is not added to snapshot files or file metadata. When present, compare main-database hashes before/after the WAL capture and compare WAL hashes from reads immediately before and after the selected WAL snapshot. These checks detect transfer corruption and concurrent changes, but are not a filesystem-atomic snapshot.
 - Encrypt snapshots locally with Argon2id + AES-256-GCM and preserve SHA-256 integrity metadata.
 - Browse encrypted snapshots and export byte-identical encrypted copies through the Windows Save As dialog.
-- Decrypt a selected snapshot only in memory after passphrase entry and verify embedded file size and SHA-256.
+- Decrypt a selected snapshot only in memory after passphrase entry and verify embedded file size and SHA-256. New RC9 snapshots record whether device-side stat and SHA-256 matched the received bytes; older RC8 vaults remain readable but are clearly marked as lacking that source-transfer attestation.
 - Scan the complete captured file for every strong signature offset, including signatures that straddle the 64 KiB boundary or occur in the final four bytes.
 - Report first-256-byte, remainder, whole-file, and tail entropy; printable/zero-byte ratios; unique byte count; size alignment; and tail hex.
 - Parse little-endian u32 words following each PLXE magic and compare plausible lengths with the file, candidate payload, and successfully decoded output sizes.
@@ -29,7 +29,7 @@ Playrix says progress is automatically saved while connected to the internet: [P
 
 ## Verification status
 
-**RC8 is not verified yet.** The Windows native Rust test suite must pass in full and the Windows x64 installer must complete successfully before this build is treated as ready. A successful frontend test run alone is not sufficient.
+**RC9 is not verified yet.** The Windows native Rust test suite must pass in full and the Windows x64 installer must complete successfully before this build is treated as ready. Then verify the downloaded installer's SHA-256, perform a clean-profile install, and validate capture against a real LDPlayer 14 device. A successful frontend test run alone is not sufficient.
 
 ## Build on Windows
 
