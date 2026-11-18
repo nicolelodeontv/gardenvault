@@ -1102,9 +1102,12 @@ fn root_cat_command(file_name: &str) -> Result<String, String> {
         return Err("Unsupported Gardenscapes save file.".to_string());
     }
     let remote_path = format!("{GAME_DATA_DIR}/{file_name}");
-    // Keep the whole command as one quoted argument to su -c. Without these
-    // quotes, some LDPlayer adb/su combinations parse the path as a target UID.
-    Ok(format!("su -c 'cat {remote_path}'"))
+    // Keep the whole command as one quoted argument to su -c. Frame the raw
+    // binary payload with its expected byte count so shell diagnostics or a
+    // partial cat can never be mistaken for save-file contents.
+    Ok(format!(
+        "su -c 'if [ -f {remote_path} ]; then size=$(wc -c < {remote_path}) || exit 41; printf \"__GARDENVAULT_CAPTURE__:%s\\n\" \"$size\"; cat {remote_path} 2>/dev/null; else printf \"__GARDENVAULT_FILE_MISSING__\\n\"; fi'"
+    ))
 }
 
 fn root_test_file_command(file_name: &str) -> Result<String, String> {
@@ -1112,13 +1115,60 @@ fn root_test_file_command(file_name: &str) -> Result<String, String> {
         return Err("Unsupported optional Gardenscapes companion file.".to_string());
     }
     let remote_path = format!("{GAME_DATA_DIR}/{file_name}");
-    Ok(format!("su -c 'test -f {remote_path}'"))
+    // Do not trust exec-out's process exit status as the presence signal.
+    // Return an explicit marker from the root shell instead.
+    Ok(format!(
+        "su -c 'if [ -f {remote_path} ]; then printf \"__GARDENVAULT_FILE_PRESENT__\\n\"; else printf \"__GARDENVAULT_FILE_MISSING__\\n\"; fi'"
+    ))
+}
+
+fn parse_remote_file_exists_output(stdout: &[u8], status_success: bool) -> Result<bool, String> {
+    if stdout == b"__GARDENVAULT_FILE_MISSING__\\n" {
+        return Ok(false);
+    }
+    if status_success && stdout == b"__GARDENVAULT_FILE_PRESENT__\\n" {
+        return Ok(true);
+    }
+    Err(format!(
+        "Could not reliably determine whether {GAME_WAL_FILE} exists (unexpected root-shell response: {}).",
+        String::from_utf8_lossy(stdout).trim()
+    ))
+}
+
+fn parse_capture_output(file_name: &str, stdout: &[u8]) -> Result<Vec<u8>, String> {
+    let header_end = stdout.iter().position(|byte| *byte == b'\\n')
+        .ok_or_else(|| format!("Could not read {file_name}: the root-shell response was not a framed file capture."))?;
+    let header = &stdout[..header_end];
+    if header == b"__GARDENVAULT_FILE_MISSING__" {
+        return Err(format!("{file_name} was not present when the capture read was attempted."));
+    }
+    let size_text = header.strip_prefix(b"__GARDENVAULT_CAPTURE__:")
+        .ok_or_else(|| format!("Could not read {file_name}: unexpected root-shell response; refusing to save it as file data."))?;
+    let size_text = std::str::from_utf8(size_text)
+        .map_err(|_| format!("Could not read {file_name}: invalid byte-count header."))?;
+    let expected_size = size_text.trim().parse::<usize>()
+        .map_err(|_| format!("Could not read {file_name}: invalid byte-count header."))?;
+    if expected_size == 0 {
+        return Err(format!("{file_name} was empty or inaccessible."));
+    }
+    if expected_size > MAX_SAVE_BYTES {
+        return Err(format!("{file_name} exceeds the {} MiB safety limit.", MAX_SAVE_BYTES / (1024 * 1024)));
+    }
+
+    let bytes = &stdout[header_end + 1..];
+    if bytes.len() != expected_size {
+        return Err(format!(
+            "Could not read {file_name} completely: the root shell declared {expected_size} bytes but returned {}. No backup was saved.",
+            bytes.len()
+        ));
+    }
+    Ok(bytes.to_vec())
 }
 
 fn remote_file_exists(adb: &Path, serial: &str, file_name: &str) -> Result<bool, String> {
     let command = root_test_file_command(file_name)?;
     let output = run_adb_for_device(adb, serial, &["exec-out", &command])?;
-    Ok(output.status.success())
+    parse_remote_file_exists_output(&output.stdout, output.status.success())
 }
 
 fn verify_main_capture_unchanged(before: &[u8], after: &[u8]) -> Result<(), String> {
@@ -1144,13 +1194,11 @@ fn capture_file(adb: &Path, serial: &str, file_name: &str) -> Result<Vec<u8>, St
     let command = root_cat_command(file_name)?;
     // exec-out avoids a PTY so bytes are captured without terminal conversion.
     let output = run_adb_for_device(adb, serial, &["exec-out", &command])?;
+    // Validate the framed response before accepting any bytes. In particular,
+    // an Android cat error message must never become a "successful" WAL file.
+    let bytes = parse_capture_output(file_name, &output.stdout)?;
     if !output.status.success() {
         return Err(format!("Could not read {file_name}: {}", String::from_utf8_lossy(&output.stderr).trim()));
-    }
-    let bytes = output.stdout;
-    if bytes.is_empty() { return Err(format!("{file_name} was empty or inaccessible.")); }
-    if bytes.len() > MAX_SAVE_BYTES {
-        return Err(format!("{file_name} exceeds the {} MiB safety limit.", MAX_SAVE_BYTES / (1024 * 1024)));
     }
     Ok(bytes)
 }
@@ -1573,20 +1621,47 @@ mod tests {
     }
 
     #[test]
-    fn root_cat_command_quotes_the_complete_su_command() {
+    fn root_cat_command_frames_binary_bytes_and_checks_file_presence() {
         assert_eq!(
             root_cat_command("GameData.db").expect("allowed save file"),
-            "su -c 'cat /data/user/0/com.playrix.gardenscapes/Documents/GameData.db'"
-        );
-        assert_eq!(
-            root_cat_command("GameData.db.bak").expect("allowed backup file"),
-            "su -c 'cat /data/user/0/com.playrix.gardenscapes/Documents/GameData.db.bak'"
+            "su -c 'if [ -f /data/user/0/com.playrix.gardenscapes/Documents/GameData.db ]; then size=$(wc -c < /data/user/0/com.playrix.gardenscapes/Documents/GameData.db) || exit 41; printf \"__GARDENVAULT_CAPTURE__:%s\\n\" \"$size\"; cat /data/user/0/com.playrix.gardenscapes/Documents/GameData.db 2>/dev/null; else printf \"__GARDENVAULT_FILE_MISSING__\\n\"; fi'"
         );
         assert!(root_cat_command("../other.db").is_err());
         assert!(root_cat_command("GameData.db; id").is_err());
-        assert_eq!(root_cat_command("GameData.db-wal").expect("WAL allowlisted"), "su -c 'cat /data/user/0/com.playrix.gardenscapes/Documents/GameData.db-wal'");
-        assert_eq!(root_test_file_command("GameData.db-wal").expect("WAL test allowlisted"), "su -c 'test -f /data/user/0/com.playrix.gardenscapes/Documents/GameData.db-wal'");
         assert!(root_test_file_command("GameData.db.bak").is_err());
+    }
+
+    #[test]
+    fn remote_wal_presence_uses_explicit_root_shell_markers() {
+        assert_eq!(
+            root_test_file_command("GameData.db-wal").expect("WAL test allowlisted"),
+            "su -c 'if [ -f /data/user/0/com.playrix.gardenscapes/Documents/GameData.db-wal ]; then printf \"__GARDENVAULT_FILE_PRESENT__\\n\"; else printf \"__GARDENVAULT_FILE_MISSING__\\n\"; fi'"
+        );
+        assert_eq!(parse_remote_file_exists_output(b"__GARDENVAULT_FILE_PRESENT__\\n", true), Ok(true));
+        assert_eq!(parse_remote_file_exists_output(b"__GARDENVAULT_FILE_MISSING__\\n", true), Ok(false));
+        assert!(parse_remote_file_exists_output(b"cat: missing\\n", true).is_err());
+        assert!(parse_remote_file_exists_output(b"__GARDENVAULT_FILE_PRESENT__\\n", false).is_err());
+    }
+
+    #[test]
+    fn capture_output_parser_preserves_binary_and_rejects_missing_or_incomplete_files() {
+        let binary = [0_u8, 0xFF, b'\\n', 0x7F];
+        let mut framed = b"__GARDENVAULT_CAPTURE__:4\\n".to_vec();
+        framed.extend_from_slice(&binary);
+        assert_eq!(parse_capture_output("GameData.db", &framed).expect("valid framed bytes"), binary);
+
+        assert!(parse_capture_output("GameData.db-wal", b"__GARDENVAULT_FILE_MISSING__\\n")
+            .expect_err("missing optional file must not be data")
+            .contains("not present"));
+        assert!(parse_capture_output("GameData.db-wal", b"__GARDENVAULT_CAPTURE__:4\\nxy")
+            .expect_err("short read must be rejected")
+            .contains("declared 4 bytes but returned 2"));
+        assert!(parse_capture_output("GameData.db-wal", b"__GARDENVAULT_CAPTURE__:2\\nxyz")
+            .expect_err("overlong read must be rejected")
+            .contains("declared 2 bytes but returned 3"));
+        assert!(parse_capture_output("GameData.db-wal", b"cat: missing\\n")
+            .expect_err("shell diagnostics must not be captured")
+            .contains("unexpected root-shell response"));
     }
 
     #[test]
