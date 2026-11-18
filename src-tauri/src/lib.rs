@@ -186,10 +186,20 @@ fn list_devices() -> Result<Vec<DeviceInfo>, String> {
     list_devices_inner()
 }
 
-fn capture_file(adb: &Path, serial: &str, file_name: &str) -> Result<Vec<u8>, String> {
+fn root_cat_command(file_name: &str) -> Result<String, String> {
+    if !matches!(file_name, "GameData.db" | "GameData.db.bak") {
+        return Err("Unsupported Gardenscapes save file.".to_string());
+    }
     let remote_path = format!("{GAME_DATA_DIR}/{file_name}");
-    let command = format!("cat {remote_path}");
-    let output = run_adb_for_device(adb, serial, &["shell", "su", "-c", &command])?;
+    // Keep the whole command as one quoted argument to su -c. Without these
+    // quotes, some LDPlayer adb/su combinations parse the path as a target UID.
+    Ok(format!("su -c 'cat {remote_path}'"))
+}
+
+fn capture_file(adb: &Path, serial: &str, file_name: &str) -> Result<Vec<u8>, String> {
+    let command = root_cat_command(file_name)?;
+    // exec-out avoids a PTY so bytes are captured without terminal conversion.
+    let output = run_adb_for_device(adb, serial, &["exec-out", &command])?;
     if !output.status.success() {
         return Err(format!("Could not read {file_name}: {}", String::from_utf8_lossy(&output.stderr).trim()));
     }
@@ -385,6 +395,20 @@ mod tests {
         assert!(!is_allowed_emulator_serial("emulator-5556;whoami"));
         assert!(!is_allowed_emulator_serial("phone-1234"));
         assert!(!is_allowed_emulator_serial("../../adb"));
+    }
+
+    #[test]
+    fn root_cat_command_quotes_the_complete_su_command() {
+        assert_eq!(
+            root_cat_command("GameData.db").expect("allowed save file"),
+            "su -c 'cat /data/user/0/com.playrix.gardenscapes/Documents/GameData.db'"
+        );
+        assert_eq!(
+            root_cat_command("GameData.db.bak").expect("allowed backup file"),
+            "su -c 'cat /data/user/0/com.playrix.gardenscapes/Documents/GameData.db.bak'"
+        );
+        assert!(root_cat_command("../other.db").is_err());
+        assert!(root_cat_command("GameData.db; id").is_err());
     }
 
     #[test]
