@@ -3,10 +3,10 @@ use argon2::{Algorithm, Argon2, Params, Version};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use chrono::Utc;
 use rand::{rngs::OsRng, RngCore};
-use rusqlite::Connection;
+use rusqlite::{config::DbConfig, Connection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{fs::{self, File, OpenOptions}, io::{Cursor, Read, Write}, path::{Path, PathBuf}, process::{Command, Output}, time::UNIX_EPOCH};
+use std::{fs::{self, File, OpenOptions}, io::{Cursor, Read, Write}, path::{Path, PathBuf}, process::{Command, Output}, time::{Duration, Instant, UNIX_EPOCH}};
 use tauri::{AppHandle, Manager};
 
 const GAME_PACKAGE: &str = "com.playrix.gardenscapes";
@@ -14,7 +14,10 @@ const GAME_DATA_DIR: &str = "/data/user/0/com.playrix.gardenscapes/Documents";
 const GAME_WAL_FILE: &str = "GameData.db-wal";
 const MAX_SAVE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_VAULT_BYTES: u64 = (MAX_SAVE_BYTES as u64) * 4 + 2 * 1024 * 1024;
-const MAX_DECOMPRESSED_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_DECOMPRESSED_BYTES: u64 = 40 * 1024 * 1024;
+const MAX_ZSTD_WINDOW_BYTES: u64 = 16 * 1024 * 1024;
+const SQLITE_QUERY_BUDGET_MS: u64 = 500;
+const ZSTD_SKIPPABLE_MAGIC_BASE: u32 = 0x184D_2A50;
 const MAX_ZSTD_PROBES: usize = 32;
 const ZSTD_MAGIC: &[u8; 4] = b"\x28\xb5\x2f\xfd";
 const VAULT_MAGIC: &[u8; 7] = b"GVLT001";
@@ -162,12 +165,13 @@ fn decrypt_vault_for_test(passphrase: &str, input: &[u8]) -> Result<Vec<u8>, Str
         .map_err(|_| "Authentication failed: wrong password or damaged vault".to_string())
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SqliteWalDiagnostics {
     present: bool,
     size_bytes: usize,
     status: String,
+    checksum_validation: String,
     magic_hex: Option<String>,
     page_size_bytes: Option<usize>,
     complete_frames: usize,
@@ -226,6 +230,18 @@ struct ZstdProbe {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ZstdSkippableFrame {
+    offset: usize,
+    magic_hex: String,
+    frame_id: u8,
+    declared_payload_bytes: usize,
+    available_payload_bytes: usize,
+    status: String,
+    note: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct InspectedFile {
     name: String,
     #[serde(flatten)]
@@ -236,6 +252,7 @@ struct InspectedFile {
     zstd_candidates_attempted: usize,
     zstd_candidates_skipped: usize,
     zstd_candidates_overlapping_skipped: usize,
+    zstd_skippable_frames: Vec<ZstdSkippableFrame>,
     zstd_probes: Vec<ZstdProbe>,
 }
 
