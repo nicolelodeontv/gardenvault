@@ -7,6 +7,8 @@ const readButton = document.querySelector("#readProfile");
 const passphraseInput = document.querySelector("#vaultPassphrase");
 const readStatus = document.querySelector("#readStatus");
 const resultPanel = document.querySelector("#resultPanel");
+const refreshVaultsButton = document.querySelector("#refreshVaults");
+const vaultList = document.querySelector("#vaultList");
 
 function setStatus(message, kind = "") {
   readStatus.textContent = message;
@@ -64,6 +66,59 @@ async function refreshDevices() {
     refreshButton.disabled = false;
   }
 }
+function formatBytes(value) {
+  const bytes = Number(value) || 0;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+function renderVaults(vaults) {
+  if (!vaults.length) {
+    vaultList.innerHTML = '<div class="vault-empty"><strong>No encrypted backups yet</strong><p>Create a snapshot from your connected LDPlayer profile to see it here.</p></div>';
+    return;
+  }
+  vaultList.innerHTML = `<div class="vault-items">${vaults.map(vault => {
+    const fileName = escapeHtml(vault.fileName);
+    const modified = new Date(Number(vault.modifiedAt) * 1000).toLocaleString();
+    return `<article class="vault-row">
+      <div class="vault-file-icon">◈</div>
+      <div class="vault-file-info"><strong>${fileName}</strong><span>${formatBytes(vault.sizeBytes)} · ${escapeHtml(modified)}</span></div>
+      <div class="vault-row-actions"><button class="button secondary export-vault" type="button" data-file-name="${fileName}">Export</button><span class="vault-row-status" aria-live="polite"></span></div>
+    </article>`;
+  }).join("")}</div>`;
+  for (const button of vaultList.querySelectorAll(".export-vault")) {
+    button.addEventListener("click", async () => {
+      const fileName = button.dataset.fileName;
+      const status = button.closest(".vault-row").querySelector(".vault-row-status");
+      button.disabled = true;
+      status.textContent = "Choose export location…";
+      status.className = "vault-row-status";
+      try {
+        const exportedPath = await invoke("export_vault", { fileName });
+        status.textContent = exportedPath ? `Exported to ${exportedPath}` : "Export cancelled.";
+        status.className = exportedPath ? "vault-row-status success" : "vault-row-status";
+      } catch (error) {
+        status.textContent = String(error);
+        status.className = "vault-row-status error";
+      } finally {
+        button.disabled = false;
+      }
+    });
+  }
+}
+async function refreshVaults() {
+  if (!invoke || !vaultList) return;
+  refreshVaultsButton.disabled = true;
+  vaultList.innerHTML = '<div class="vault-empty">Loading encrypted backups…</div>';
+  try {
+    const vaults = await invoke("list_vaults");
+    renderVaults(vaults);
+  } catch (error) {
+    vaultList.innerHTML = `<div class="vault-empty error">${escapeHtml(error)}</div>`;
+  } finally {
+    refreshVaultsButton.disabled = false;
+  }
+}
 function renderResult(result) {
   const cards = result.files.map(file => `<div class="file-card"><small>CAPTURED FILE</small><strong>${escapeHtml(file.name)}</strong><small>${Number(file.sizeBytes).toLocaleString()} bytes</small><code>SHA-256: ${escapeHtml(file.sha256)}</code></div>`).join("");
   resultPanel.className = "panel result-panel";
@@ -83,6 +138,7 @@ readButton.addEventListener("click", async () => {
     const result = await invoke("read_profile", { serial, passphrase });
     renderResult(result);
     setStatus("Profile captured and encrypted locally.", "success");
+    await refreshVaults();
   } catch (error) {
     setStatus(String(error), "error");
   } finally {
@@ -91,4 +147,9 @@ readButton.addEventListener("click", async () => {
     refreshReadButton();
   }
 });
-window.addEventListener("DOMContentLoaded", refreshDevices);
+refreshVaultsButton?.addEventListener("click", refreshVaults);
+document.querySelector("#backupsNav")?.addEventListener("click", () => vaultList?.scrollIntoView({ behavior: "smooth", block: "center" }));
+window.addEventListener("DOMContentLoaded", () => {
+  refreshDevices();
+  refreshVaults();
+});
