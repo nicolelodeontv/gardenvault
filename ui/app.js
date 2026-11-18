@@ -97,14 +97,38 @@ function renderVaults(vaults) {
       try {
         const report = await invoke("inspect_vault", { fileName, passphrase });
         const details = report.files.map(file => {
-          const embedded = (file.embeddedSignatures || []).join(", ");
-          return `${file.name}: ${file.detectedFormat} · ${formatBytes(file.sizeBytes)} · SHA-256 verified
-Entropy: ${Number(file.entropyBitsPerByte).toFixed(3)} bits/byte · ${file.entropyAssessment}
+          const embedded = (file.embeddedSignatures || []).join("\n  ");
+          const headerWords = (file.plxeHeaderWords || []).join("\n  ") || "No PLXE header fields found";
+          const zstd = (file.zstdProbes || []).map(probe => {
+            const frameSize = probe.compressedFrameSizeBytes == null ? "unknown" : formatBytes(probe.compressedFrameSizeBytes);
+            const declared = probe.frameContentSizeBytes == null ? "not declared" : formatBytes(probe.frameContentSizeBytes);
+            const trailing = probe.trailingBytesAfterFrame == null ? "unknown" : formatBytes(probe.trailingBytesAfterFrame);
+            const decoded = probe.decoded
+              ? `Decoded output: ${formatBytes(probe.decoded.sizeBytes)} · ${probe.decoded.detectedFormat}
+Decoded SHA-256: ${probe.decoded.sha256}
+Decoded header (32 bytes): ${probe.decoded.signatureHex}
+Decoded entropy: whole ${Number(probe.decoded.entropyBitsPerByte).toFixed(3)} · first 256 ${Number(probe.decoded.header256EntropyBitsPerByte).toFixed(3)} · remainder ${Number(probe.decoded.bodyEntropyAfter256BitsPerByte).toFixed(3)}
+Decoded signatures: ${(probe.decoded.embeddedSignatures || []).join(", ")}`
+              : "";
+            return `Zstandard @ 0x${Number(probe.offset).toString(16).toUpperCase()}: ${probe.status}
+Frame size: ${frameSize} · declared output: ${declared} · trailing bytes: ${trailing}
+${probe.note}
+${decoded}`;
+          }).join("\n\n") || "No Zstandard candidates found";
+          return `${file.name}: ${file.detectedFormat} · SHA-256 verified
+Size: ${Number(file.sizeBytes).toLocaleString()} bytes · mod 16: ${file.sizeMod16} · mod 512: ${file.sizeMod512} · mod 4096: ${file.sizeMod4096}
+Entropy (whole): ${Number(file.entropyBitsPerByte).toFixed(3)} bits/byte · ${file.entropyAssessment}
+Entropy (first 256): ${Number(file.header256EntropyBitsPerByte).toFixed(3)} · remainder: ${Number(file.bodyEntropyAfter256BitsPerByte).toFixed(3)} · tail 256: ${Number(file.tail256EntropyBitsPerByte).toFixed(3)}
 Printable ASCII: ${Number(file.printableAsciiPercent).toFixed(1)}% · zero bytes: ${Number(file.zeroBytePercent).toFixed(1)}% · unique byte values: ${file.uniqueByteValues}/256
 Header (first 32 bytes): ${file.signatureHex}
-Embedded signatures: ${embedded}`;
-        }).join("\n\n");
-        status.textContent = `${details}${report.identicalFiles ? " · Both captured files are identical." : ""}`;
+Tail (last 32 bytes): ${file.tailHex}
+Embedded signatures (whole file):
+  ${embedded || "No signature hits"}
+PLXE little-endian words:
+  ${headerWords}
+Zstandard probes: ${file.zstdCandidatesAttempted}/${file.zstdCandidatesTotal} attempted · ${file.zstdCandidatesSkipped} skipped by safety cap
+${zstd}`;
+        }).join("\n\n");        status.textContent = `${details}${report.identicalFiles ? " · Both captured files are identical." : ""}`;
         status.className = "vault-row-status success";
       } catch (error) { status.textContent = String(error); status.className = "vault-row-status error"; }
       finally { button.disabled = false; if (inspectPassphraseInput) inspectPassphraseInput.value = ""; }
