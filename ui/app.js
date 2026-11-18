@@ -112,7 +112,7 @@ ${frame.note}`
 SQLite version: ${database.sqliteVersion || "not available"} · quick_check: ${database.quickCheck || "not available"}
 Schema objects: ${(database.schemaObjects || []).join(", ") || "none listed"}
 WAL: ${wal ? wal.status : "not checked"} · present: ${wal ? wal.present : "unknown"} · size: ${wal ? formatBytes(wal.sizeBytes) : "unknown"}
-WAL validation: ${wal?.checksumValidation || "unavailable"} · page size: ${wal?.pageSizeBytes ?? "unknown"} · complete frames: ${wal?.completeFrames ?? "unknown"} · salt matches: ${wal?.saltMatchingFrames ?? "unknown"} · trailing bytes: ${wal?.trailingBytes ?? "unknown"}
+WAL validation: ${wal?.checksumValidation || "unvalidated"} · page size: ${wal?.pageSizeBytes ?? "unknown"} · complete frames: ${wal?.completeFrames ?? "unknown"} · salt matches: ${wal?.saltMatchingFrames ?? "unknown"} · trailing bytes: ${wal?.trailingBytes ?? "unknown"}
 ${database.note || ""} ${wal?.note || ""}`;
           };
           const sqlite = describeSqlite(file.sqliteDatabase);
