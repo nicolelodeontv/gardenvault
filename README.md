@@ -11,9 +11,9 @@ GardenVault is a local-first Windows desktop utility for reading Gardenscapes pr
 - Decrypt a selected snapshot only in memory after passphrase entry and verify embedded file size and SHA-256.
 - Scan the complete captured file for every known signature hit, including hits near the end of the file.
 - Report first-256-byte, remainder, whole-file, and tail entropy; printable/zero-byte ratios; unique byte count; size alignment; and tail hex.
-- Parse little-endian u32 words following each PLXE magic and compare plausible lengths with the file and candidate payload sizes.
+- Parse little-endian u32 words following each PLXE magic and compare plausible lengths with the file, candidate payload, and successfully decoded output sizes.
 - Attempt bounded streaming Zstandard decoding at candidate offsets. Report frame offsets, declared content sizes, actual compressed frame sizes, trailing bytes, and diagnostics for successful decoded output.
-- Limit each decoded candidate to 64 MiB and at most 32 Zstandard candidates per file. Inspection never extracts files to disk or writes to the game directory.
+- Limit aggregate decoded output to 64 MiB per file, cap the Zstandard back-reference window at 64 MiB, and attempt at most 32 candidate offsets per file. Inspection never extracts files to disk or writes to the game directory.
 
 ## Compatibility limits
 
@@ -33,7 +33,7 @@ Run `build_windows.bat` from the repository root. GitHub Actions builds an unsig
 
 ## LDPlayer 14
 
-ADB discovery checks `GARDENVAULT_ADB`, then `C:\LDPlayer\\LDPlayer14\\adb.exe`, then `adb.exe` on PATH. Enable ADB debugging and LDPlayer root access. Close Gardenscapes completely before reading.
+ADB discovery checks `GARDENVAULT_ADB`, then `C:\LDPlayer\LDPlayer14\adb.exe`, then `adb.exe` on PATH. Enable ADB debugging and LDPlayer root access. Close Gardenscapes completely before reading.
 
 ## Security
 
