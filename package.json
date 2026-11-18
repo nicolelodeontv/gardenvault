@@ -1,7 +1,7 @@
 {
   "name": "gardenvault",
   "private": true,
-  "version": "1.0.0-rc.7",
+  "version": "1.0.0-rc.8",
   "type": "module",
   "scripts": {
     "tauri": "tauri",
