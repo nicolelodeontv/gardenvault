@@ -1,6 +1,13 @@
 # Product roadmap
 
 ## v1.0.0-rc.7 — Local binary diagnostics
+- [x] Authenticated inspection that decrypts the snapshot only in memory
+- [x] Validate captured file lengths and SHA-256 checksums
+- [x] Report entropy, printable-byte percentage, zero-byte percentage, and unique byte count
+- [x] Scan the first 64 KiB for common compression/container signatures, including PLXE and Zstandard
+- [x] Keep inspection read-only; do not extract or alter the original game files
+
+## v1.0.0-rc.7 — Local binary diagnostics
 - [x] Tauri 2 desktop shell and dark dashboard
 - [x] ADB device discovery for supported LDPlayer serials
 - [x] Read-only capture of the configured Gardenscapes files after the game process exits
