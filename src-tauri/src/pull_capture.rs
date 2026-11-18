@@ -7,7 +7,7 @@ use std::{
 use super::{hash_hex, run_adb_for_device, GAME_DATA_DIR, MAX_SAVE_BYTES};
 
 #[cfg(test)]
-use super::{append_captured_file, append_optional_captured_file, FileInfo, VaultFile};
+use super::{append_captured_file, append_optional_captured_file};
 
 #[derive(Debug)]
 struct DevicePullMetadata {

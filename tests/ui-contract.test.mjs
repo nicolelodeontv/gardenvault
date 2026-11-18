@@ -71,3 +71,8 @@ test("inspector exposes bounded 4 KiB block and XOR heuristic diagnostics", () =
   assert.match(js, /SQLite magic key/);
   assert.match(js, /middle blocks analyzed but omitted/);
 });
+
+test("capture success panel describes binary-safe adb pull verification", () => {
+  assert.match(js, /Device source and temporary copy matched; ADB pull size and SHA-256 matched before encryption/);
+  assert.doesNotMatch(js, /Device-reported stat size and SHA-256 matched the received bytes before encryption/);
+});

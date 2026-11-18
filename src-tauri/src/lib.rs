@@ -1382,91 +1382,6 @@ fn list_devices() -> Result<Vec<DeviceInfo>, String> {
     list_devices_inner()
 }
 
-fn root_cat_command(file_name: &str) -> Result<String, String> {
-    if !matches!(file_name, "GameData.db" | "GameData.db.bak" | "GameData.db-wal") {
-        return Err("Unsupported Gardenscapes save file.".to_string());
-    }
-    let remote_path = format!("\"{GAME_DATA_DIR}/{file_name}\"");
-    // stat and sha256sum run on the emulator before cat starts. The host
-    // verifies both values against the received bytes, detecting truncation,
-    // stream translation, and changes between hashing and transfer.
-    Ok(format!(
-        "su -c 'if [ -f {remote_path} ]; then size=$(stat -c %s {remote_path} 2>/dev/null) || exit 41; digest_line=$(sha256sum {remote_path} 2>/dev/null) || exit 42; digest=${{digest_line%% *}}; printf \"__GARDENVAULT_CAPTURE__:%s:%s\\n\" \"$size\" \"$digest\"; cat {remote_path} 2>/dev/null; else printf \"__GARDENVAULT_FILE_MISSING__\\n\"; fi'"
-    ))
-}
-
-fn parse_capture_output(
-    file_name: &str,
-    stdout: &[u8],
-    stderr: &[u8],
-    status_success: bool,
-) -> Result<Option<Vec<u8>>, String> {
-    if !status_success {
-        let detail = String::from_utf8_lossy(stderr).trim().to_string();
-        return Err(if detail.is_empty() {
-            format!("Could not read {file_name}: ADB or the root shell failed before a verified capture was returned.")
-        } else {
-            format!("Could not read {file_name}: ADB or root access failed: {detail}")
-        });
-    }
-
-    if stdout == b"__GARDENVAULT_FILE_MISSING__\n" {
-        return Ok(None);
-    }
-
-    let header_end = stdout.iter().position(|byte| *byte == b'\n')
-        .ok_or_else(|| format!("Could not read {file_name}: root shell returned no valid capture header."))?;
-    let header = &stdout[..header_end];
-    let metadata = header.strip_prefix(b"__GARDENVAULT_CAPTURE__:")
-        .ok_or_else(|| format!("Could not read {file_name}: unexpected root-shell response; refusing to save it as file data."))?;
-    let metadata = std::str::from_utf8(metadata)
-        .map_err(|_| format!("Could not read {file_name}: invalid device metadata header."))?;
-    let (size_text, device_sha256) = metadata.split_once(':')
-        .ok_or_else(|| format!("Could not read {file_name}: missing device SHA-256 in capture header."))?;
-    // ADB/root-shell wrappers may emit a CRLF metadata line. Trim only the
-    // textual digest field; the binary payload below remains byte-for-byte raw.
-    let device_sha256 = device_sha256.trim();
-    let expected_size = size_text.trim().parse::<usize>()
-        .map_err(|_| format!("Could not read {file_name}: invalid device stat size."))?;
-    if expected_size == 0 {
-        return Err(format!("{file_name} exists but is zero bytes; refusing to create an empty backup entry."));
-    }
-    if expected_size > MAX_SAVE_BYTES {
-        return Err(format!("{file_name} exceeds the {} MiB safety limit.", MAX_SAVE_BYTES / (1024 * 1024)));
-    }
-    if device_sha256.len() != 64 || !device_sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(format!("Could not read {file_name}: device returned an invalid SHA-256 value."));
-    }
-
-    let bytes = &stdout[header_end + 1..];
-    if bytes.len() != expected_size {
-        return Err(format!(
-            "Could not read {file_name} completely: device stat reported {expected_size} bytes but ADB returned {}. No backup was saved.",
-            bytes.len()
-        ));
-    }
-    let received_sha256 = hash_hex(bytes);
-    if !received_sha256.eq_ignore_ascii_case(device_sha256) {
-        return Err(format!(
-            "Capture integrity check failed for {file_name}: device SHA-256 {device_sha256} does not match received bytes {received_sha256}. No backup was saved."
-        ));
-    }
-    Ok(Some(bytes.to_vec()))
-}
-
-fn capture_file_optional(adb: &Path, serial: &str, file_name: &str) -> Result<Option<Vec<u8>>, String> {
-    let command = root_cat_command(file_name)?;
-    // exec-out avoids a PTY. Device-side stat and SHA-256 are checked before
-    // any captured bytes are accepted or added to a vault.
-    let output = run_adb_for_device(adb, serial, &["exec-out", &command])?;
-    parse_capture_output(file_name, &output.stdout, &output.stderr, output.status.success())
-}
-
-fn capture_file(adb: &Path, serial: &str, file_name: &str) -> Result<Vec<u8>, String> {
-    capture_file_optional(adb, serial, file_name)?
-        .ok_or_else(|| format!("Required Gardenscapes file {file_name} is not present."))
-}
-
 fn append_captured_file(
     file_name: &str,
     bytes: Vec<u8>,
@@ -1981,93 +1896,6 @@ mod tests {
     }
 
     #[test]
-    fn root_cat_command_uses_device_stat_and_sha256_before_binary_output() {
-        let command = root_cat_command("GameData.db").expect("allowed save file");
-        assert!(command.contains("stat -c %s"));
-        assert!(command.contains("sha256sum"));
-        assert!(command.contains("cat"));
-        assert!(root_cat_command("../other.db").is_err());
-        assert!(root_cat_command("GameData.db; id").is_err());
-        assert!(root_cat_command("unexpected.db").is_err());
-    }
-
-    #[test]
-    fn missing_optional_wal_is_absent_and_creates_no_snapshot_or_file_metadata_entry() {
-        let missing = b"__GARDENVAULT_FILE_MISSING__\n";
-        assert_eq!(parse_capture_output(GAME_WAL_FILE, missing, b"", true).expect("explicit missing marker"), None);
-
-        let mut file_infos = Vec::new();
-        let mut vault_files = Vec::new();
-        append_optional_captured_file(GAME_WAL_FILE, None, &mut file_infos, &mut vault_files);
-        assert!(file_infos.is_empty());
-        assert!(vault_files.is_empty());
-    }
-
-    #[test]
-    fn root_shell_permission_denial_is_a_clear_capture_error() {
-        let error = parse_capture_output("GameData.db", b"", b"su: permission denied", false)
-            .expect_err("root denial must not be stored");
-        assert!(error.contains("root access failed"));
-        assert!(error.contains("permission denied"));
-    }
-
-    #[test]
-    fn existing_zero_length_file_is_rejected() {
-        let header = format!("__GARDENVAULT_CAPTURE__:0:{}\n", hex::encode([0_u8; 32]));
-        let error = parse_capture_output("GameData.db-wal", header.as_bytes(), b"", true)
-            .expect_err("zero-length database companion must not be stored");
-        assert!(error.contains("zero bytes"));
-    }
-
-    #[test]
-    fn short_capture_is_rejected_against_device_stat_size() {
-        let header = format!("__GARDENVAULT_CAPTURE__:4:{}\n", hash_hex(b"abcd"));
-        let mut stdout = header.into_bytes();
-        stdout.extend_from_slice(b"ab");
-        let error = parse_capture_output("GameData.db", &stdout, b"", true)
-            .expect_err("truncated transport must fail");
-        assert!(error.contains("device stat reported 4 bytes"));
-        assert!(error.contains("ADB returned 2"));
-    }
-
-    #[test]
-    fn device_sha256_detects_translation_and_preserves_crlf_binary_bytes() {
-        let binary = b"first\r\nsecond\r\n";
-        let header = format!("__GARDENVAULT_CAPTURE__:{}:{}\n", binary.len(), hash_hex(binary));
-        let mut stdout = header.into_bytes();
-        stdout.extend_from_slice(binary);
-        assert_eq!(
-            parse_capture_output("GameData.db", &stdout, b"", true).expect("matching device digest"),
-            Some(binary.to_vec())
-        );
-
-        let wrong_hash_header = format!("__GARDENVAULT_CAPTURE__:{}:{}\n", binary.len(), hash_hex(b"first\nsecond\n"));
-        let mut translated = wrong_hash_header.into_bytes();
-        translated.extend_from_slice(binary);
-        let error = parse_capture_output("GameData.db", &translated, b"", true)
-            .expect_err("translated stream must not match device hash");
-        assert!(error.contains("does not match received bytes"));
-    }
-
-    #[test]
-    fn crlf_capture_header_is_accepted_without_changing_binary_payload() {
-        let binary = b"garden\r\nstate\x00data";
-        let header = format!(
-            "__GARDENVAULT_CAPTURE__:{}:{}\r\n",
-            binary.len(),
-            hash_hex(binary)
-        );
-        let mut stdout = header.into_bytes();
-        stdout.extend_from_slice(binary);
-
-        assert_eq!(
-            parse_capture_output("GameData.db", &stdout, b"", true)
-                .expect("CRLF metadata header with intact binary payload"),
-            Some(binary.to_vec())
-        );
-    }
-
-    #[test]
     fn old_rc8_vault_metadata_remains_readable_without_capture_attestation() {
         let old_snapshot = serde_json::json!({
             "schemaVersion": 1,
@@ -2093,7 +1921,7 @@ mod tests {
             files: Vec::new(),
         };
         let current_metadata = serde_json::to_value(current_snapshot).expect("serialize current snapshot metadata");
-        assert_eq!(current_metadata["captureIntegrity"], "device-stat-sha256-v1");
+        assert_eq!(current_metadata["captureIntegrity"], "device-copy-pull-sha256-v1");
         assert_eq!(current_metadata["missingOptionalFiles"][0], GAME_WAL_FILE);
         assert!(current_metadata["files"].as_array().expect("file array").is_empty());
     }

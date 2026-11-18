@@ -233,7 +233,7 @@ function renderResult(result) {
     ? `<div class="path-line">Not present: ${(result.missingOptionalFiles || []).map(escapeHtml).join(", ")}. No file entry was stored.</div>`
     : "";
   resultPanel.className = "panel result-panel";
-  resultPanel.innerHTML = `<div style="width:100%"><div class="section-head result-top"><div><h3>Encrypted snapshot created</h3><p>Device ${escapeHtml(result.deviceSerial)} · ${escapeHtml(result.capturedAt)}</p></div><span class="status-badge ok">ENCRYPTED</span></div><div class="result-grid">${cards}</div><div class="path-line">Device-reported stat size and SHA-256 matched the received bytes before encryption.</div>${missingOptional}<div class="path-line">Vault file: <code>${escapeHtml(result.vaultPath)}</code></div></div>`;
+  resultPanel.innerHTML = `<div style="width:100%"><div class="section-head result-top"><div><h3>Encrypted snapshot created</h3><p>Device ${escapeHtml(result.deviceSerial)} · ${escapeHtml(result.capturedAt)}</p></div><span class="status-badge ok">ENCRYPTED</span></div><div class="result-grid">${cards}</div><div class="path-line">Device source and temporary copy matched; ADB pull size and SHA-256 matched before encryption.</div>${missingOptional}<div class="path-line">Vault file: <code>${escapeHtml(result.vaultPath)}</code></div></div>`;
 }
 refreshButton.addEventListener("click", refreshDevices);
 deviceSelect.addEventListener("change", refreshReadButton);
