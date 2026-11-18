@@ -100,6 +100,11 @@ function renderVaults(vaults) {
           const embedded = (file.embeddedSignatures || []).join("\n  ");
           const headerWords = (file.plxeHeaderWords || []).join("\n  ") || "No PLXE header fields found";
           const decodedSizeMatches = (file.plxeHeaderDecodedSizeMatches || []).join("\n  ") || "No PLXE words matched a successfully decoded output size";
+          const skippableFrames = (file.zstdSkippableFrames || []).map(frame =>
+            `Skippable frame @ 0x${Number(frame.offset).toString(16).toUpperCase()} · id ${frame.frameId} · ${frame.status}
+Magic: ${frame.magicHex} · declared payload: ${formatBytes(frame.declaredPayloadBytes)} · available: ${formatBytes(frame.availablePayloadBytes)}
+${frame.note}`
+          ).join("\n\n") || "No Zstandard skippable-frame signatures found";
           const describeSqlite = database => {
             if (!database) return "No SQLite header detected";
             const wal = database.wal;
@@ -107,7 +112,7 @@ function renderVaults(vaults) {
 SQLite version: ${database.sqliteVersion || "not available"} · quick_check: ${database.quickCheck || "not available"}
 Schema objects: ${(database.schemaObjects || []).join(", ") || "none listed"}
 WAL: ${wal ? wal.status : "not checked"} · present: ${wal ? wal.present : "unknown"} · size: ${wal ? formatBytes(wal.sizeBytes) : "unknown"}
-WAL page size: ${wal?.pageSizeBytes ?? "unknown"} · complete frames: ${wal?.completeFrames ?? "unknown"} · salt matches: ${wal?.saltMatchingFrames ?? "unknown"} · trailing bytes: ${wal?.trailingBytes ?? "unknown"}
+WAL validation: ${wal?.checksumValidation || "unavailable"} · page size: ${wal?.pageSizeBytes ?? "unknown"} · complete frames: ${wal?.completeFrames ?? "unknown"} · salt matches: ${wal?.saltMatchingFrames ?? "unknown"} · trailing bytes: ${wal?.trailingBytes ?? "unknown"}
 ${database.note || ""} ${wal?.note || ""}`;
           };
           const sqlite = describeSqlite(file.sqliteDatabase);
