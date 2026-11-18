@@ -556,24 +556,62 @@ fn probe_zstd_frame(bytes: &[u8], offset: usize, remaining_budget: u64) -> ZstdP
     }
 }
 
-fn inspect_bytes(bytes: &[u8]) -> (ByteDiagnostics, Vec<String>, Vec<String>, usize, Vec<ZstdProbe>) {
+fn inspect_bytes(bytes: &[u8]) -> (ByteDiagnostics, Vec<String>, Vec<String>, usize, usize, usize, Vec<ZstdProbe>) {
     let plxe_offsets = find_signature_offsets(bytes, b"PLXE");
     let zstd_offsets = find_signature_offsets(bytes, ZSTD_MAGIC);
-    let attempted = zstd_offsets.len().min(MAX_ZSTD_PROBES);
     let mut remaining_budget = MAX_DECOMPRESSED_BYTES;
     let mut probes = Vec::new();
-    for offset in zstd_offsets.iter().take(attempted) {
+    let mut attempted = 0_usize;
+    let mut skipped_by_cap = 0_usize;
+    let mut overlapping_skipped = 0_usize;
+    let mut covered_until = 0_usize;
+
+    for (index, offset) in zstd_offsets.iter().enumerate() {
+        if *offset < covered_until {
+            overlapping_skipped += 1;
+            probes.push(ZstdProbe {
+                offset: *offset,
+                status: "overlapping-signature-skipped".to_string(),
+                frame_content_size_bytes: None,
+                compressed_frame_size_bytes: None,
+                trailing_bytes_after_frame: None,
+                observed_output_bytes: None,
+                note: format!("Signature at 0x{offset:X} is inside an already measured frame; it is not counted as a separate frame."),
+                decoded: None,
+            });
+            continue;
+        }
+        if attempted >= MAX_ZSTD_PROBES {
+            skipped_by_cap += zstd_offsets.len() - index;
+            break;
+        }
+
+        attempted += 1;
         let probe = probe_zstd_frame(bytes, *offset, remaining_budget);
         if let Some(decoded) = probe.decoded.as_ref() {
             remaining_budget = remaining_budget.saturating_sub(decoded.size_bytes as u64);
-        } else if probe.status == "output-limit-exceeded" {
+        } else if probe.status == "limit-hit" && probe.observed_output_bytes.is_some_and(|size| size > remaining_budget) {
             remaining_budget = 0;
+        }
+        if let Some(frame_size) = probe.compressed_frame_size_bytes {
+            if let Some(end) = offset.checked_add(frame_size) {
+                covered_until = covered_until.max(end);
+            }
         }
         probes.push(probe);
     }
+
     let header_words = plxe_header_words(bytes, &plxe_offsets, &zstd_offsets, &probes);
     let decoded_size_matches = plxe_header_decoded_size_matches(bytes, &plxe_offsets, &zstd_offsets, &probes);
-    (byte_diagnostics(bytes), header_words, decoded_size_matches, zstd_offsets.len() - attempted, probes)
+    (
+        byte_diagnostics(bytes),
+        header_words,
+        decoded_size_matches,
+        attempted,
+        skipped_by_cap,
+        overlapping_skipped,
+        probes,
+    )
 }
 
 fn detect_file_format(bytes: &[u8]) -> String {
@@ -772,15 +810,16 @@ fn inspect_vault(app: AppHandle, file_name: String, passphrase: String) -> Resul
         if bytes.len() != file.size_bytes || hash_hex(&bytes) != file.sha256 {
             return Err(format!("Integrity check failed for {}.", file.name));
         }
-        let (diagnostics, header_words, decoded_size_matches, zstd_candidates_skipped, zstd_probes) = inspect_bytes(&bytes);
+        let (diagnostics, header_words, decoded_size_matches, zstd_candidates_attempted, zstd_candidates_skipped, zstd_candidates_overlapping_skipped, zstd_probes) = inspect_bytes(&bytes);
         inspected.push(InspectedFile {
             name: file.name,
             diagnostics,
             plxe_header_words: header_words,
             plxe_header_decoded_size_matches: decoded_size_matches,
             zstd_candidates_total: find_signature_offsets(&bytes, ZSTD_MAGIC).len(),
-            zstd_candidates_attempted: zstd_probes.len(),
+            zstd_candidates_attempted,
             zstd_candidates_skipped,
+            zstd_candidates_overlapping_skipped,
             zstd_probes,
         });
     }
@@ -975,7 +1014,7 @@ mod tests {
         bytes.extend_from_slice(&second);
         bytes[4..8].copy_from_slice(&(first.len() as u32).to_le_bytes());
 
-        let (_, header_words, _decoded_size_matches, skipped, probes) = inspect_bytes(&bytes);
+        let (_, header_words, _decoded_size_matches, _attempted, skipped, _overlapping, probes) = inspect_bytes(&bytes);
         assert_eq!(find_signature_offsets(&bytes, ZSTD_MAGIC), vec![first_offset, second_offset]);
         assert_eq!(probes.len(), 2);
         assert_eq!(skipped, 0);
@@ -994,7 +1033,7 @@ mod tests {
         bytes[8..12].copy_from_slice(&(original.len() as u32).to_le_bytes());
         bytes.extend_from_slice(b"footer!");
 
-        let (_, header_words, decoded_matches, skipped, probes) = inspect_bytes(&bytes);
+        let (_, header_words, decoded_matches, _attempted, skipped, _overlapping, probes) = inspect_bytes(&bytes);
         assert_eq!(skipped, 0);
         assert_eq!(probes.len(), 1);
         assert_eq!(probes[0].offset, frame_offset);
