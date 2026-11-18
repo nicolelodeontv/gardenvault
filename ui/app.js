@@ -93,10 +93,17 @@ function renderVaults(vaults) {
       const status = button.closest(".vault-row").querySelector(".vault-row-status");
       const passphrase = inspectPassphraseInput?.value || "";
       if (passphrase.length < 12) { status.textContent = "Enter the vault passphrase above."; status.className = "vault-row-status error"; inspectPassphraseInput?.focus(); return; }
-      button.disabled = true; status.textContent = "Decrypting in memory and checking file signatures…"; status.className = "vault-row-status";
+      button.disabled = true; status.textContent = "Decrypting in memory and analyzing binary structure…"; status.className = "vault-row-status";
       try {
         const report = await invoke("inspect_vault", { fileName, passphrase });
-        const details = report.files.map(file => `${file.name}: ${file.detectedFormat} · ${formatBytes(file.sizeBytes)} · SHA-256 verified · header ${file.signatureHex}`).join(" | ");
+        const details = report.files.map(file => {
+          const embedded = (file.embeddedSignatures || []).join(", ");
+          return `${file.name}: ${file.detectedFormat} · ${formatBytes(file.sizeBytes)} · SHA-256 verified
+Entropy: ${Number(file.entropyBitsPerByte).toFixed(3)} bits/byte · ${file.entropyAssessment}
+Printable ASCII: ${Number(file.printableAsciiPercent).toFixed(1)}% · zero bytes: ${Number(file.zeroBytePercent).toFixed(1)}% · unique byte values: ${file.uniqueByteValues}/256
+Header (first 32 bytes): ${file.signatureHex}
+Embedded signatures: ${embedded}`;
+        }).join("\\n\\n");
         status.textContent = `${details}${report.identicalFiles ? " · Both captured files are identical." : ""}`;
         status.className = "vault-row-status success";
       } catch (error) { status.textContent = String(error); status.className = "vault-row-status error"; }
