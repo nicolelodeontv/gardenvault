@@ -13,7 +13,7 @@ const GAME_PACKAGE: &str = "com.playrix.gardenscapes";
 const GAME_DATA_DIR: &str = "/data/user/0/com.playrix.gardenscapes/Documents";
 const GAME_WAL_FILE: &str = "GameData.db-wal";
 const MAX_SAVE_BYTES: usize = 64 * 1024 * 1024;
-const MAX_VAULT_BYTES: u64 = (MAX_SAVE_BYTES as u64) * 3 + 1024 * 1024;
+const MAX_VAULT_BYTES: u64 = (MAX_SAVE_BYTES as u64) * 4 + 2 * 1024 * 1024;
 const MAX_DECOMPRESSED_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ZSTD_PROBES: usize = 32;
 const ZSTD_MAGIC: &[u8; 4] = b"\x28\xb5\x2f\xfd";
@@ -1361,6 +1361,17 @@ mod tests {
         assert_eq!(probe.status, "limit-hit");
         assert_eq!(probe.frame_content_size_bytes, Some(MAX_DECOMPRESSED_BYTES + 1));
         assert!(probe.decoded.is_none());
+    }
+
+    #[test]
+    fn high_ratio_zstd_output_bomb_hits_the_actual_streaming_output_cap() {
+        let payload = vec![0_u8; MAX_DECOMPRESSED_BYTES as usize + 1];
+        let frame = make_windowed_zstd_frame(26, &payload);
+        assert!(frame.len() < 256 * 1024, "high-ratio fixture should be small on disk");
+        let probe = probe_zstd_frame(&frame, 0, MAX_DECOMPRESSED_BYTES);
+        assert_eq!(probe.status, "limit-hit");
+        assert!(probe.observed_output_bytes.unwrap_or_default() > MAX_DECOMPRESSED_BYTES);
+        assert!(probe.decoded.is_none(), "partial bomb output must never be exposed as a complete decoded file");
     }
 
     #[test]
