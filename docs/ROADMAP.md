@@ -1,6 +1,6 @@
 # Product roadmap
 
-## v1.0.0-rc.8 — Read-only binary forensics
+## v1.0.0-rc.9 — Read-only binary forensics
 - [x] Authenticated in-memory snapshot inspection and SHA-256 verification
 - [x] Scan the complete file for every occurrence of the known strong signatures
 - [x] Record all Zstandard candidate offsets and attempt bounded streaming decode at each (up to 32 per file)
