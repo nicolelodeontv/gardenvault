@@ -15,7 +15,7 @@ GardenVault is a local-first Windows desktop utility for reading Gardenscapes pr
 - Attempt bounded streaming Zstandard decoding at candidate offsets. Report explicit statuses (`signature-only`, `incomplete`, `decode-failed`, `limit-hit`, `decoded-size-matches`, and `decoded-size-mismatch`), frame offsets, declared/observed sizes, compressed frame sizes, trailing bytes, and diagnostics for complete decoded output.
 - Skip candidate magic that falls inside an already measured frame, while still attempting a new frame exactly at the prior frame boundary.
 - Report Zstandard skippable frames (magic range `0x184D2A50`–`0x184D2A5F`) separately; they are metadata frames and do not count as normal decode candidates.
-- Stream decoded output through a 32 KiB scratch buffer and grow the retained output only as bytes arrive. The nominal 64 MiB decompression working-set budget is split into 40 MiB retained output, a 16 MiB Zstandard window cap, and 8 MiB decoder/scratch headroom. The cumulative output cap and 32-real-attempt limit apply per file. Inspection never extracts files to disk or writes to the game directory.
+- Stream decoded output through a 32 KiB scratch buffer and grow the retained output only as bytes arrive. The nominal 64 MiB active decompression/SQLite working-set budget is split into 20 MiB retained output, up to 20 MiB for SQLite’s own read-only deserialization copy, a 16 MiB Zstandard window cap, and 8 MiB decoder/scratch headroom. Source snapshot buffers are already resident separately and are not included in this per-frame working-set estimate. The cumulative output cap and 32-real-attempt limit apply per file. Inspection never extracts files to disk or writes to the game directory.
 
 ## Compatibility limits
 
