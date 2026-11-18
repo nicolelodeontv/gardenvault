@@ -1254,7 +1254,6 @@ fn read_profile(app: AppHandle, serial: String, passphrase: String) -> Result<Re
         // Verify the main file immediately before and after fetching its WAL.
         // If it changed, reject the mixed capture instead of saving a torn pair.
         let main_before_wal = capture_file(&adb, &serial, "GameData.db")?;
-        let before_digest = hash_hex(&main_before_wal);
         verify_main_capture_unchanged(&main_bytes, &main_before_wal).map_err(|_| {
             "Capture consistency check failed: GameData.db changed before WAL capture. Keep Gardenscapes closed and retry.".to_string()
         })?;
@@ -1263,7 +1262,6 @@ fn read_profile(app: AppHandle, serial: String, passphrase: String) -> Result<Re
         let wal_digest = hash_hex(&wal_bytes);
 
         let main_after_wal = capture_file(&adb, &serial, "GameData.db")?;
-        let after_digest = hash_hex(&main_after_wal);
         verify_main_capture_unchanged(&main_before_wal, &main_after_wal).map_err(|_| {
             "Capture consistency check failed: GameData.db changed while GameData.db-wal was being captured. No snapshot was saved; keep Gardenscapes closed and retry.".to_string()
         })?;
