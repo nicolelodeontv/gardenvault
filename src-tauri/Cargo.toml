@@ -22,6 +22,8 @@ sha2 = "0.10"
 hex = "0.4"
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+zstd = "0.14.4"
+zstd-safe = "8.3.0"
 
 [target.'cfg(windows)'.dependencies]
 rfd = { version = "0.15.4", default-features = false }
