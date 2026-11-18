@@ -1123,10 +1123,10 @@ fn root_test_file_command(file_name: &str) -> Result<String, String> {
 }
 
 fn parse_remote_file_exists_output(stdout: &[u8], status_success: bool) -> Result<bool, String> {
-    if stdout == b"__GARDENVAULT_FILE_MISSING__\\n" {
+    if stdout == b"__GARDENVAULT_FILE_MISSING__\n" {
         return Ok(false);
     }
-    if status_success && stdout == b"__GARDENVAULT_FILE_PRESENT__\\n" {
+    if status_success && stdout == b"__GARDENVAULT_FILE_PRESENT__\n" {
         return Ok(true);
     }
     Err(format!(
@@ -1136,7 +1136,7 @@ fn parse_remote_file_exists_output(stdout: &[u8], status_success: bool) -> Resul
 }
 
 fn parse_capture_output(file_name: &str, stdout: &[u8]) -> Result<Vec<u8>, String> {
-    let header_end = stdout.iter().position(|byte| *byte == b'\\n')
+    let header_end = stdout.iter().position(|byte| *byte == b'\n')
         .ok_or_else(|| format!("Could not read {file_name}: the root-shell response was not a framed file capture."))?;
     let header = &stdout[..header_end];
     if header == b"__GARDENVAULT_FILE_MISSING__" {
@@ -1637,29 +1637,29 @@ mod tests {
             root_test_file_command("GameData.db-wal").expect("WAL test allowlisted"),
             "su -c 'if [ -f /data/user/0/com.playrix.gardenscapes/Documents/GameData.db-wal ]; then printf \"__GARDENVAULT_FILE_PRESENT__\\n\"; else printf \"__GARDENVAULT_FILE_MISSING__\\n\"; fi'"
         );
-        assert_eq!(parse_remote_file_exists_output(b"__GARDENVAULT_FILE_PRESENT__\\n", true), Ok(true));
-        assert_eq!(parse_remote_file_exists_output(b"__GARDENVAULT_FILE_MISSING__\\n", true), Ok(false));
-        assert!(parse_remote_file_exists_output(b"cat: missing\\n", true).is_err());
-        assert!(parse_remote_file_exists_output(b"__GARDENVAULT_FILE_PRESENT__\\n", false).is_err());
+        assert_eq!(parse_remote_file_exists_output(b"__GARDENVAULT_FILE_PRESENT__\n", true), Ok(true));
+        assert_eq!(parse_remote_file_exists_output(b"__GARDENVAULT_FILE_MISSING__\n", true), Ok(false));
+        assert!(parse_remote_file_exists_output(b"cat: missing\n", true).is_err());
+        assert!(parse_remote_file_exists_output(b"__GARDENVAULT_FILE_PRESENT__\n", false).is_err());
     }
 
     #[test]
     fn capture_output_parser_preserves_binary_and_rejects_missing_or_incomplete_files() {
-        let binary = [0_u8, 0xFF, b'\\n', 0x7F];
+        let binary = [0_u8, 0xFF, b'\n', 0x7F];
         let mut framed = b"__GARDENVAULT_CAPTURE__:4\\n".to_vec();
         framed.extend_from_slice(&binary);
         assert_eq!(parse_capture_output("GameData.db", &framed).expect("valid framed bytes"), binary);
 
-        assert!(parse_capture_output("GameData.db-wal", b"__GARDENVAULT_FILE_MISSING__\\n")
+        assert!(parse_capture_output("GameData.db-wal", b"__GARDENVAULT_FILE_MISSING__\n")
             .expect_err("missing optional file must not be data")
             .contains("not present"));
-        assert!(parse_capture_output("GameData.db-wal", b"__GARDENVAULT_CAPTURE__:4\\nxy")
+        assert!(parse_capture_output("GameData.db-wal", b"__GARDENVAULT_CAPTURE__:4\nxy")
             .expect_err("short read must be rejected")
             .contains("declared 4 bytes but returned 2"));
-        assert!(parse_capture_output("GameData.db-wal", b"__GARDENVAULT_CAPTURE__:2\\nxyz")
+        assert!(parse_capture_output("GameData.db-wal", b"__GARDENVAULT_CAPTURE__:2\nxyz")
             .expect_err("overlong read must be rejected")
             .contains("declared 2 bytes but returned 3"));
-        assert!(parse_capture_output("GameData.db-wal", b"cat: missing\\n")
+        assert!(parse_capture_output("GameData.db-wal", b"cat: missing\n")
             .expect_err("shell diagnostics must not be captured")
             .contains("unexpected root-shell response"));
     }
