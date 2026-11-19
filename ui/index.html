@@ -32,6 +32,15 @@
         <label class="field"><span>VAULT PASSPHRASE</span><input id="vaultPassphrase" type="password" autocomplete="new-password" placeholder="At least 12 characters" maxlength="256"></label>
       </div>
       <div class="hint-row"><span class="hint-icon">i</span><span>Close Gardenscapes completely before reading. Root access is required to read its private save directory.</span></div>
+      <details class="adb-settings" id="adbSettings">
+        <summary>ADB settings</summary>
+        <div class="adb-body">
+          <p id="adbStatus" class="adb-status">Checking ADB…</p>
+          <div class="adb-row"><input id="adbPath" type="text" spellcheck="false" autocomplete="off" maxlength="520" placeholder="C:\LDPlayer\LDPlayer9\adb.exe" aria-label="Full path to adb.exe"><button id="adbBrowse" class="button secondary" type="button">Browse…</button></div>
+          <div class="adb-row"><button id="adbSave" class="button secondary" type="button">Save</button><button id="adbTest" class="button secondary" type="button">Test</button><button id="adbReset" class="button secondary" type="button">Use auto-detect</button></div>
+          <p id="adbMessage" class="adb-status" aria-live="polite"></p>
+        </div>
+      </details>
       <div class="action-row"><button id="readProfile" class="button primary" type="button" disabled>◈ Read Profile & Create Encrypted Backup</button><button id="copyDiagnostics" class="button secondary" type="button">Copy diagnostics</button><span id="readStatus" class="read-status">No profile captured this session.</span></div>
     </section>
     <section class="section-head lower-head"><div><h3>Latest snapshot</h3><p>Metadata only. The save contents remain encrypted.</p></div></section>

@@ -334,6 +334,52 @@ readButton.addEventListener("click", async () => {
     refreshReadButton();
   }
 });
+const adbStatus = document.querySelector("#adbStatus");
+const adbPathInput = document.querySelector("#adbPath");
+const adbMessage = document.querySelector("#adbMessage");
+function setAdbMessage(message, kind = "") {
+  adbMessage.textContent = message;
+  adbMessage.className = `adb-status ${kind}`.trim();
+}
+async function refreshAdbSettings() {
+  if (!invoke || !adbStatus) return;
+  try {
+    const settings = await invoke("get_adb_settings");
+    adbStatus.textContent = `Using ${settings.resolvedPath} (${settings.source}).`;
+    if (settings.configuredPath && !adbPathInput.value) adbPathInput.value = settings.configuredPath;
+  } catch (error) {
+    adbStatus.textContent = String(error);
+  }
+}
+async function saveAdbPath(path) {
+  setAdbMessage("Checking that this is Android Debug Bridge…");
+  try {
+    await invoke("set_adb_path", { path });
+    if (!path) adbPathInput.value = "";
+    setAdbMessage(path ? "ADB path saved." : "Using auto-detected ADB.", "success");
+    await refreshAdbSettings();
+    await refreshDevices();
+  } catch (error) {
+    setAdbMessage(String(error), "error");
+  }
+}
+document.querySelector("#adbSave")?.addEventListener("click", () => {
+  const value = adbPathInput.value.trim();
+  if (!value) { setAdbMessage("Enter the full path to adb.exe, or choose Use auto-detect.", "error"); return; }
+  saveAdbPath(value);
+});
+document.querySelector("#adbReset")?.addEventListener("click", () => saveAdbPath(null));
+document.querySelector("#adbTest")?.addEventListener("click", async () => {
+  setAdbMessage("Running adb version…");
+  try { setAdbMessage(await invoke("test_adb"), "success"); }
+  catch (error) { setAdbMessage(String(error), "error"); }
+});
+document.querySelector("#adbBrowse")?.addEventListener("click", async () => {
+  try {
+    const chosen = await invoke("browse_adb");
+    if (chosen) { adbPathInput.value = chosen; setAdbMessage("Selected. Choose Save to use it.", ""); }
+  } catch (error) { setAdbMessage(String(error), "error"); }
+});
 refreshVaultsButton?.addEventListener("click", refreshVaults);
 document.querySelector("#copyDiagnostics")?.addEventListener("click", async () => {
   const devices = (window.gardenVaultDevices || []).map(d => `${d.serial} gameInstalled=${d.gameInstalled} rootAvailable=${d.rootAvailable}`);
@@ -356,4 +402,5 @@ document.querySelector("#backupsNav")?.addEventListener("click", () => vaultList
 window.addEventListener("DOMContentLoaded", () => {
   refreshDevices();
   refreshVaults();
+  refreshAdbSettings();
 });

@@ -11,3 +11,10 @@
 .nav-item:disabled{opacity:.55;cursor:not-allowed}
 .button.danger{border-color:#8a4747;background:#3a1f22;color:#ffb4b4}
 .vault-row-actions{justify-items:end}
+.adb-settings{margin-top:14px;border-top:1px solid #203747;padding-top:12px;font-size:11px;color:#94aab6}
+.adb-settings summary{cursor:pointer;font-weight:700;color:#b7cbd4}
+.adb-body{display:grid;gap:10px;margin-top:12px}
+.adb-row{display:flex;gap:10px;flex-wrap:wrap}
+.adb-row input{flex:1;min-width:240px;border:1px solid #2c4758;border-radius:8px;padding:10px 12px;color:var(--text);background:#0b1a26;font:12px "Segoe UI",sans-serif}
+.adb-status{margin:0;font-size:10px;line-height:1.5;overflow-wrap:anywhere}
+.adb-status.error{color:var(--red)}.adb-status.success{color:var(--green)}

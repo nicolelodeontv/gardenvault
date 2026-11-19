@@ -98,3 +98,14 @@ test("diagnostics copy exposes status only, never passphrase fields", () => {
   assert.match(block, /connectionBadge/);
   assert.doesNotMatch(block, /passphraseInput|inspectPassphraseInput|vaultPassphrase/);
 });
+
+test("ADB settings expose save, test, reset and browse through fixed commands", () => {
+  for (const id of ["adbPath", "adbSave", "adbTest", "adbReset", "adbBrowse"]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+  assert.match(js, /invoke\("get_adb_settings"\)/);
+  assert.match(js, /invoke\("set_adb_path", \{ path \}\)/);
+  assert.match(js, /invoke\("test_adb"\)/);
+  assert.match(js, /invoke\("browse_adb"\)/);
+  assert.match(css, /\.adb-settings/);
+});

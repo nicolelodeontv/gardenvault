@@ -4,15 +4,16 @@ use serde::Serialize;
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 mod adb;
 mod inspect;
 mod pull_capture;
 mod restore;
+mod settings;
 mod vault;
 
 use adb::*;
@@ -697,6 +698,88 @@ fn restore_profile(
     })
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdbSettings {
+    configured_path: Option<String>,
+    resolved_path: String,
+    source: String,
+}
+
+fn app_settings_file(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|dir| dir.join("settings.json"))
+        .map_err(|e| format!("Could not resolve GardenVault data folder: {e}"))
+}
+
+fn current_adb_settings(app: &AppHandle) -> Result<AdbSettings, String> {
+    let configured = settings::load_adb_path(&app_settings_file(app)?);
+    let (resolved, source) = adb_resolution();
+    Ok(AdbSettings {
+        configured_path: configured.map(|path| path.display().to_string()),
+        resolved_path: resolved.display().to_string(),
+        source: source.label().to_string(),
+    })
+}
+
+#[tauri::command]
+fn get_adb_settings(app: AppHandle) -> Result<AdbSettings, String> {
+    current_adb_settings(&app)
+}
+
+/// Save (or, with an empty value, clear) the ADB path. A path is only saved
+/// after `adb version` proves it is really Android Debug Bridge.
+#[tauri::command]
+fn set_adb_path(app: AppHandle, path: Option<String>) -> Result<AdbSettings, String> {
+    let file = app_settings_file(&app)?;
+    let cleaned = path
+        .map(|value| value.trim().trim_matches('"').trim().to_string())
+        .filter(|value| !value.is_empty());
+    match cleaned {
+        Some(value) => {
+            let candidate = PathBuf::from(&value);
+            validate_adb_path(&candidate)?;
+            adb_version(&candidate)?;
+            settings::save_adb_path(&file, Some(&candidate))?;
+            set_adb_override(Some(candidate));
+        }
+        None => {
+            settings::save_adb_path(&file, None)?;
+            set_adb_override(None);
+        }
+    }
+    current_adb_settings(&app)
+}
+
+/// Run `adb version` with whichever ADB is currently in use.
+#[tauri::command]
+fn test_adb() -> Result<String, String> {
+    let (path, source) = adb_resolution();
+    let version = adb_version(&path)?;
+    Ok(format!(
+        "{version} · {} ({})",
+        path.display(),
+        source.label()
+    ))
+}
+
+#[tauri::command]
+fn browse_adb() -> Result<Option<String>, String> {
+    #[cfg(windows)]
+    {
+        Ok(rfd::FileDialog::new()
+            .set_title("Choose adb.exe")
+            .add_filter("ADB executable", &["exe"])
+            .pick_file()
+            .map(|path| path.display().to_string()))
+    }
+    #[cfg(not(windows))]
+    {
+        Err("Browsing for adb.exe is available in the Windows build.".to_string())
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -706,8 +789,18 @@ pub fn run() {
             inspect_vault,
             read_profile,
             delete_vault,
-            restore_profile
+            restore_profile,
+            get_adb_settings,
+            set_adb_path,
+            test_adb,
+            browse_adb
         ])
+        .setup(|app| {
+            if let Ok(file) = app_settings_file(app.handle()) {
+                set_adb_override(settings::load_adb_path(&file));
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running GardenVault");
 }
@@ -719,7 +812,6 @@ mod tests {
     use rusqlite::Connection;
     use std::{
         io::Cursor,
-        path::PathBuf,
         time::{Duration, Instant},
     };
 
