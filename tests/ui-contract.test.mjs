@@ -109,3 +109,8 @@ test("ADB settings expose save, test, reset and browse through fixed commands", 
   assert.match(js, /invoke\("browse_adb"\)/);
   assert.match(css, /\.adb-settings/);
 });
+
+test("backup row actions use an equal-width grid and the passphrase field has a visible border", () => {
+  assert.match(css, /\.vault-row-actions\{display:grid;grid-template-columns:repeat\(2,minmax\(92px,1fr\)\)/);
+  assert.match(css, /\.vault-tools input\{border-color:#2c4758/);
+});

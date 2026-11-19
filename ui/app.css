@@ -18,3 +18,8 @@
 .adb-row input{flex:1;min-width:240px;border:1px solid #2c4758;border-radius:8px;padding:10px 12px;color:var(--text);background:#0b1a26;font:12px "Segoe UI",sans-serif}
 .adb-status{margin:0;font-size:10px;line-height:1.5;overflow-wrap:anywhere}
 .adb-status.error{color:var(--red)}.adb-status.success{color:var(--green)}
+.vault-row-actions{display:grid;grid-template-columns:repeat(2,minmax(92px,1fr));gap:6px;justify-items:stretch}
+.vault-row-actions .button{width:100%;white-space:nowrap}
+.vault-tools input{border-color:#2c4758;background:#0b1a26}
+.vault-tools input:focus{outline:2px solid #3fd0c9;outline-offset:1px}
+@media(max-width:720px){.vault-row-actions{margin-left:48px;justify-items:stretch}}
