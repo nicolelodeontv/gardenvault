@@ -101,6 +101,22 @@ function formatBytes(value) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
+let previousInspection;
+
+function summarizeFileChanges(before, after) {
+  const beforeByName = new Map(before.map(file => [file.name, file]));
+  const afterByName = new Map(after.map(file => [file.name, file]));
+  const names = [...new Set([...beforeByName.keys(), ...afterByName.keys()])];
+  return names.map(name => {
+    const oldFile = beforeByName.get(name);
+    const newFile = afterByName.get(name);
+    if (!oldFile) return `${name} — added (${formatBytes(newFile.sizeBytes)})`;
+    if (!newFile) return `${name} — removed (${formatBytes(oldFile.sizeBytes)})`;
+    if (oldFile.sha256 === newFile.sha256) return `${name} — identical`;
+    return `${name} — changed (${formatBytes(oldFile.sizeBytes)} → ${formatBytes(newFile.sizeBytes)})`;
+  }).join("\n");
+}
+
 function renderVaults(vaults) {
   if (!vaults.length) {
     vaultList.innerHTML = '<div class="vault-empty"><strong>No encrypted backups yet</strong><p>Create a snapshot from your connected LDPlayer profile to see it here.</p></div>';
@@ -217,7 +233,16 @@ PLXE words matching decoded sizes:
   ${decodedSizeMatches}
 Zstandard candidates: ${file.zstdCandidatesAttempted} attempted / ${file.zstdCandidatesTotal} signatures · ${file.zstdCandidatesSkipped} skipped by 32-attempt cap · ${file.zstdCandidatesOverlappingSkipped} nested/overlapping signatures skipped
 ${zstd}`;
-        }).join("\n\n");        status.textContent = `${captureIntegritySummary}${missingOptionalSummary ? `\n${missingOptionalSummary}` : ""}\n\n${details}${report.identicalFiles ? " · All captured files are byte-for-byte identical." : ""}`;
+        }).join("\n\n");
+        const baseline = previousInspection;
+        const comparison = baseline && baseline.fileName !== fileName
+          ? `Compared with last inspected backup (${baseline.fileName})\n${summarizeFileChanges(baseline.files, report.files)}\n\n`
+          : "Inspect a different backup to compare its captured files with this one.\n\n";
+        previousInspection = {
+          fileName,
+          files: report.files.map(({ name, sizeBytes, sha256 }) => ({ name, sizeBytes, sha256 })),
+        };
+        status.textContent = `${comparison}${captureIntegritySummary}${missingOptionalSummary ? `\n${missingOptionalSummary}` : ""}\n\n${details}${report.identicalFiles ? " · All captured files are byte-for-byte identical." : ""}`;
         status.className = "vault-row-status success";
         if (inspectPassphraseInput) inspectPassphraseInput.value = "";
       } catch (error) { status.textContent = String(error); status.className = "vault-row-status error"; }
