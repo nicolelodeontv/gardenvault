@@ -19,6 +19,7 @@ use std::{
 use tauri::{AppHandle, Manager};
 
 mod pull_capture;
+mod restore;
 
 const GAME_PACKAGE: &str = "com.playrix.gardenscapes";
 const GAME_DATA_DIR: &str = "/data/user/0/com.playrix.gardenscapes/Documents";
@@ -1024,6 +1025,7 @@ fn block_profile(bytes: &[u8]) -> BlockProfileDiagnostics {
     }
 }
 
+#[allow(clippy::match_overlapping_arm)]
 fn text_likeness_weight(byte: u8) -> f64 {
     match byte {
         b' ' => 3.2,
@@ -1777,7 +1779,7 @@ fn list_vaults(app: AppHandle) -> Result<Vec<VaultListItem>, String> {
         });
     }
 
-    vaults.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+    vaults.sort_by_key(|vault| std::cmp::Reverse(vault.modified_at));
     Ok(vaults)
 }
 
@@ -2105,6 +2107,170 @@ fn read_profile(
     })
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RestoreProfileResult {
+    device_serial: String,
+    safety_backup_path: String,
+    restored_files: Vec<FileInfo>,
+    removed_stale_wal: bool,
+}
+
+/// Read, decrypt and validate a vault file from `vault_dir`.
+fn read_vault_snapshot(
+    vault_dir: &Path,
+    file_name: &str,
+    passphrase: &str,
+) -> Result<VaultSnapshot, String> {
+    if !is_valid_vault_file_name(file_name) {
+        return Err("Invalid backup file name.".to_string());
+    }
+    let source = vault_dir.join(file_name);
+    let metadata = fs::symlink_metadata(&source)
+        .map_err(|e| format!("Could not open the selected backup: {e}"))?;
+    if !metadata.file_type().is_file() || metadata.len() < 35 || metadata.len() > MAX_VAULT_BYTES {
+        return Err("The selected backup is not a valid-sized regular vault file.".to_string());
+    }
+    let mut encrypted = Vec::with_capacity(metadata.len() as usize);
+    File::open(&source)
+        .and_then(|mut file| file.read_to_end(&mut encrypted))
+        .map_err(|e| format!("Could not read encrypted backup: {e}"))?;
+    let plaintext = decrypt_vault(passphrase, &encrypted)?;
+    let snapshot: VaultSnapshot = serde_json::from_slice(&plaintext)
+        .map_err(|_| "Decrypted backup has an unsupported snapshot structure.".to_string())?;
+    if snapshot.product != "GardenVault"
+        || snapshot.package != GAME_PACKAGE
+        || snapshot.schema_version != 1
+    {
+        return Err("Snapshot metadata is not a supported Gardenscapes capture.".to_string());
+    }
+    Ok(snapshot)
+}
+
+/// Decode every file in a snapshot, verifying size and SHA-256 for each.
+fn decode_snapshot_files(snapshot: VaultSnapshot) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let mut decoded = Vec::new();
+    for file in snapshot.files {
+        if !matches!(
+            file.name.as_str(),
+            "GameData.db" | "GameData.db.bak" | "GameData.db-wal"
+        ) {
+            return Err("Snapshot contains an unexpected file entry.".to_string());
+        }
+        let bytes = BASE64
+            .decode(&file.content_base64)
+            .map_err(|_| "Snapshot contains invalid encoded file data.".to_string())?;
+        if bytes.len() != file.size_bytes || hash_hex(&bytes) != file.sha256 {
+            return Err(format!("Integrity check failed for {}.", file.name));
+        }
+        decoded.push((file.name, bytes));
+    }
+    if decoded.is_empty() {
+        return Err("Snapshot contains no save files.".to_string());
+    }
+    Ok(decoded)
+}
+
+/// Delete one regular `.gvault` file from `vault_dir` after checking its header.
+fn delete_vault_in(vault_dir: &Path, file_name: &str) -> Result<(), String> {
+    if !is_valid_vault_file_name(file_name) {
+        return Err("Invalid backup file name.".to_string());
+    }
+    let target = vault_dir.join(file_name);
+    let metadata = fs::symlink_metadata(&target)
+        .map_err(|e| format!("Could not open the selected backup: {e}"))?;
+    if !metadata.file_type().is_file() {
+        return Err("The selected backup is not a regular vault file.".to_string());
+    }
+    let mut header = [0_u8; 7];
+    File::open(&target)
+        .and_then(|mut file| file.read_exact(&mut header))
+        .map_err(|e| format!("Could not verify the backup header: {e}"))?;
+    if &header != VAULT_MAGIC {
+        return Err("The selected file is not a recognized GardenVault backup.".to_string());
+    }
+    fs::remove_file(&target).map_err(|e| format!("Could not delete the backup: {e}"))
+}
+
+#[tauri::command]
+fn delete_vault(app: AppHandle, file_name: String) -> Result<(), String> {
+    delete_vault_in(&app_vault_dir(&app)?, &file_name)
+}
+
+#[tauri::command]
+fn restore_profile(
+    app: AppHandle,
+    serial: String,
+    file_name: String,
+    passphrase: String,
+) -> Result<RestoreProfileResult, String> {
+    if !is_allowed_emulator_serial(&serial) {
+        return Err(
+            "Unsupported device identifier. Choose a connected LDPlayer emulator.".to_string(),
+        );
+    }
+    if passphrase.chars().count() < 12 || passphrase.len() > 256 {
+        return Err(
+            "Enter the vault passphrase (12 characters minimum, 256 bytes maximum).".to_string(),
+        );
+    }
+
+    // Decrypt and verify the backup first so a wrong passphrase fails before
+    // anything on the device is touched.
+    let snapshot = read_vault_snapshot(&app_vault_dir(&app)?, &file_name, &passphrase)?;
+    let files = decode_snapshot_files(snapshot)?;
+    if !files.iter().any(|(name, _)| name == "GameData.db") {
+        return Err("This backup has no GameData.db and cannot be restored.".to_string());
+    }
+
+    let devices = list_devices_inner()?;
+    let device = devices.iter().find(|d| d.serial == serial).ok_or_else(|| {
+        "The selected emulator is no longer connected. Refresh the device list.".to_string()
+    })?;
+    if !device.game_installed {
+        return Err("Gardenscapes is not installed on the selected emulator.".to_string());
+    }
+    if !device.root_available {
+        return Err(
+            "Root access is unavailable. Enable LDPlayer root access and try again.".to_string(),
+        );
+    }
+    let adb = adb_executable();
+    let game_is_running = |adb: &Path| -> Result<bool, String> {
+        let output = run_adb_for_device(adb, &serial, &["shell", "pidof", GAME_PACKAGE])?;
+        Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())
+    };
+    if game_is_running(&adb)? {
+        return Err("Gardenscapes is still running. Close the game completely, wait for its save to finish, then retry.".to_string());
+    }
+
+    // Always keep the current state: take a verified safety backup first.
+    let safety = read_profile(app.clone(), serial.clone(), passphrase.clone()).map_err(|e| {
+        format!("Restore cancelled. The current game state could not be backed up first, so nothing was changed. {e}")
+    })?;
+    if game_is_running(&adb)? {
+        return Err("Gardenscapes started during the restore. Nothing was changed; close the game and retry.".to_string());
+    }
+
+    restore::restore_files(&adb, &serial, &files)?;
+
+    let removed_stale_wal = !files.iter().any(|(name, _)| name == GAME_WAL_FILE);
+    let restored_files = files
+        .iter()
+        .map(|(name, bytes)| FileInfo {
+            name: name.clone(),
+            size_bytes: bytes.len(),
+            sha256: hash_hex(bytes),
+        })
+        .collect();
+    Ok(RestoreProfileResult {
+        device_serial: serial,
+        safety_backup_path: safety.vault_path,
+        restored_files,
+        removed_stale_wal,
+    })
+}
+
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -2112,7 +2278,9 @@ pub fn run() {
             list_vaults,
             export_vault,
             inspect_vault,
-            read_profile
+            read_profile,
+            delete_vault,
+            restore_profile
         ])
         .run(tauri::generate_context!())
         .expect("error while running GardenVault");
@@ -2233,7 +2401,7 @@ mod tests {
             (MAX_DECOMPRESSED_BYTES * 2) + MAX_ZSTD_WINDOW_BYTES + MAX_DECOMPRESSOR_HEADROOM_BYTES;
         assert!(peak_components <= MAX_DECOMPRESSOR_WORKING_SET_BYTES);
         assert_eq!(peak_components, MAX_DECOMPRESSOR_WORKING_SET_BYTES);
-        assert!(MAX_DECOMPRESSED_BYTES < 64 * 1024 * 1024);
+        const _: () = assert!(MAX_DECOMPRESSED_BYTES < 64 * 1024 * 1024);
     }
 
     #[test]
@@ -2296,6 +2464,71 @@ mod tests {
                 .join("adb.exe")
         ));
         assert!(list.iter().all(|p| p.file_name().unwrap() == "adb.exe"));
+    }
+
+    fn scratch_dir(label: &str) -> PathBuf {
+        let mut id = [0_u8; 8];
+        OsRng.fill_bytes(&mut id);
+        let dir = std::env::temp_dir().join(format!("gv-test-{label}-{}", hex::encode(id)));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn delete_vault_removes_only_valid_vault_files() {
+        let dir = scratch_dir("delete");
+        let good = dir.join("gardenscapes-1.gvault");
+        let mut bytes = VAULT_MAGIC.to_vec();
+        bytes.extend_from_slice(&[0_u8; 40]);
+        fs::write(&good, &bytes).unwrap();
+        let fake = dir.join("gardenscapes-2.gvault");
+        fs::write(&fake, [7_u8; 64]).unwrap();
+
+        assert!(delete_vault_in(&dir, "../gardenscapes-1.gvault").is_err());
+        assert!(delete_vault_in(&dir, "notes.txt").is_err());
+        assert!(delete_vault_in(&dir, "missing.gvault").is_err());
+        assert!(delete_vault_in(&dir, "gardenscapes-2.gvault").is_err());
+        assert!(fake.exists());
+        delete_vault_in(&dir, "gardenscapes-1.gvault").unwrap();
+        assert!(!good.exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn vault_snapshot_round_trips_and_detects_tampering_before_restore() {
+        let dir = scratch_dir("snapshot");
+        let content = b"SQLite format 3\0 test payload \r\n\n\r".to_vec();
+        let make = |sha: String| VaultSnapshot {
+            schema_version: 1,
+            product: "GardenVault".to_string(),
+            package: GAME_PACKAGE.to_string(),
+            device_serial: "emulator-5554".to_string(),
+            captured_at: "2026-01-01T00:00:00Z".to_string(),
+            capture_integrity: None,
+            missing_optional_files: vec![GAME_WAL_FILE.to_string()],
+            files: vec![VaultFile {
+                name: "GameData.db".to_string(),
+                size_bytes: content.len(),
+                sha256: sha,
+                content_base64: BASE64.encode(&content),
+            }],
+        };
+        let passphrase = "correct horse battery";
+        let encrypted = encrypt_vault(
+            passphrase,
+            &serde_json::to_vec(&make(hash_hex(&content))).unwrap(),
+        )
+        .unwrap();
+        fs::write(dir.join("a.gvault"), &encrypted).unwrap();
+
+        let snapshot = read_vault_snapshot(&dir, "a.gvault", passphrase).unwrap();
+        let files = decode_snapshot_files(snapshot).unwrap();
+        assert_eq!(files, vec![("GameData.db".to_string(), content.clone())]);
+        assert!(read_vault_snapshot(&dir, "a.gvault", "wrong passphrase!!").is_err());
+
+        let tampered = make(hash_hex(b"different"));
+        assert!(decode_snapshot_files(tampered).is_err());
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

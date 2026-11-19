@@ -1,5 +1,14 @@
 # Product roadmap
 
+## Unreleased — Restore and backup management (experimental)
+- [x] Restore a `.gvault` snapshot to a selected LDPlayer instance with a mandatory pre-restore safety backup, staged and hash-verified writes, stale-WAL removal, and post-rename verification
+- [x] Delete a stored vault after a second confirming click (header-checked, regular files only)
+- [x] Keep the device selection across refreshes (in memory only; no browser storage)
+- [x] Copy a diagnostics summary (no passphrases or save data)
+- [x] Clippy-clean (`-D warnings`), locked CI installs, and `Cargo.lock` / `package-lock.json` tracked
+- [x] Find LDPlayer 9 and 14 ADB across common drives and Program Files
+- [ ] Exercise restore end to end on a real LDPlayer instance and confirm the game accepts and keeps the restored save
+
 ## v1.0.0-rc.12 — Binary-safe ADB pull capture
 - [x] Replace binary stdout streaming with root copy to a unique temporary device file and `adb pull`
 - [x] Try `/sdcard/` first and fall back to `/data/local/tmp/` with mode `0644` when shared storage cannot accept the copy
@@ -53,4 +62,4 @@
 3. Determine whether the local file is a cache, local checkpoint, or meaningful progress store; do not assume it is server-authoritative.
 4. Implement a parser only after the container and integrity rules are verified.
 
-Currency/item/level editing, restore-to-game, live Apply, cross-platform sync, and cloud analytics remain disabled.
+Currency/item/level editing, live Apply, cross-platform sync, and cloud analytics remain disabled. Restore-to-game is available but experimental until verified on a real device.

@@ -9,3 +9,5 @@
 .vault-row-status{max-width:700px;min-width:0;font-size:10px;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere}
 
 .nav-item:disabled{opacity:.55;cursor:not-allowed}
+.button.danger{border-color:#8a4747;background:#3a1f22;color:#ffb4b4}
+.vault-row-actions{justify-items:end}

@@ -6,6 +6,7 @@ on:
       - build/ldplayer-reader-mvp
     paths:
       - 'package.json'
+      - 'package-lock.json'
       - 'ui/**'
       - 'src-tauri/**'
       - 'tests/**'
@@ -37,9 +38,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
-          components: rustfmt
+          components: rustfmt, clippy
       - name: Install npm dependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
       - name: Run frontend tests
         run: npm test
       - name: Generate application icons
@@ -48,8 +49,10 @@ jobs:
         run: |
           cargo fmt --manifest-path src-tauri/Cargo.toml --all
           cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+      - name: Lint Rust (clippy, warnings are errors)
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
       - name: Run Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
       - name: Install and expose NSIS
         shell: pwsh
         run: |

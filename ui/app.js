@@ -18,6 +18,23 @@ function setStatus(message, kind = "") {
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 }
+function armConfirm(button, confirmLabel, action) {
+  const original = button.textContent;
+  let armed = false;
+  let timer = null;
+  const disarm = () => { armed = false; button.textContent = original; button.classList.remove("danger"); if (timer) { clearTimeout(timer); timer = null; } };
+  button.addEventListener("click", async () => {
+    if (!armed) {
+      armed = true;
+      button.textContent = confirmLabel;
+      button.classList.add("danger");
+      timer = setTimeout(disarm, 6000);
+      return;
+    }
+    disarm();
+    await action();
+  });
+}
 const utf8Bytes = value => new TextEncoder().encode(value).length;
 function passphraseProblem(value) {
   if ([...value].length < 12) return "Enter a vault passphrase of at least 12 characters.";
@@ -35,6 +52,7 @@ async function refreshDevices() {
     connectionBadge.className = "status-badge warn";
     return;
   }
+  const previousSerial = deviceSelect.value;
   refreshButton.disabled = true;
   deviceSelect.disabled = true;
   deviceSummary.textContent = "Scanning connected LDPlayer instances…";
@@ -59,6 +77,7 @@ async function refreshDevices() {
       deviceSelect.append(option);
     }
     deviceSelect.disabled = false;
+    if (previousSerial && devices.some(d => d.serial === previousSerial)) deviceSelect.value = previousSerial;
     const ready = devices.some(d => d.gameInstalled && d.rootAvailable);
     deviceSummary.textContent = `${devices.length} supported emulator(s) detected.`;
     connectionBadge.textContent = ready ? "DEVICE READY" : "CHECK SETUP";
@@ -93,7 +112,7 @@ function renderVaults(vaults) {
     return `<article class="vault-row">
       <div class="vault-file-icon">◈</div>
       <div class="vault-file-info"><strong>${fileName}</strong><span>${formatBytes(vault.sizeBytes)} · ${escapeHtml(modified)}</span></div>
-      <div class="vault-row-actions"><button class="button secondary inspect-vault" type="button" data-file-name="${fileName}">Inspect</button><button class="button secondary export-vault" type="button" data-file-name="${fileName}">Export</button><span class="vault-row-status" aria-live="polite"></span></div>
+      <div class="vault-row-actions"><button class="button secondary inspect-vault" type="button" data-file-name="${fileName}">Inspect</button><button class="button secondary export-vault" type="button" data-file-name="${fileName}">Export</button><button class="button secondary restore-vault" type="button" data-file-name="${fileName}">Restore</button><button class="button secondary delete-vault" type="button" data-file-name="${fileName}">Delete</button><span class="vault-row-status" aria-live="polite"></span></div>
     </article>`;
   }).join("")}</div>`;
   for (const button of vaultList.querySelectorAll(".inspect-vault")) {
@@ -200,8 +219,54 @@ Zstandard candidates: ${file.zstdCandidatesAttempted} attempted / ${file.zstdCan
 ${zstd}`;
         }).join("\n\n");        status.textContent = `${captureIntegritySummary}${missingOptionalSummary ? `\n${missingOptionalSummary}` : ""}\n\n${details}${report.identicalFiles ? " · All captured files are byte-for-byte identical." : ""}`;
         status.className = "vault-row-status success";
+        if (inspectPassphraseInput) inspectPassphraseInput.value = "";
       } catch (error) { status.textContent = String(error); status.className = "vault-row-status error"; }
-      finally { button.disabled = false; if (inspectPassphraseInput) inspectPassphraseInput.value = ""; }
+      finally { button.disabled = false; }
+    });
+  }
+  for (const button of vaultList.querySelectorAll(".restore-vault")) {
+    const fileName = button.dataset.fileName;
+    const status = button.closest(".vault-row").querySelector(".vault-row-status");
+    armConfirm(button, "Confirm restore", async () => {
+      const serial = deviceSelect.value;
+      const passphrase = inspectPassphraseInput?.value || "";
+      const problem = passphraseProblem(passphrase);
+      if (!serial) { status.textContent = "Select a connected LDPlayer device first."; status.className = "vault-row-status error"; return; }
+      if (problem) { status.textContent = problem; status.className = "vault-row-status error"; inspectPassphraseInput?.focus(); return; }
+      button.disabled = true;
+      status.textContent = "Backing up the current game state, then restoring. Keep the game closed…";
+      status.className = "vault-row-status";
+      try {
+        const result = await invoke("restore_profile", { serial, fileName, passphrase });
+        const names = result.restoredFiles.map(file => file.name).join(", ");
+        const walNote = result.removedStaleWal ? " The old WAL file was removed." : "";
+        const message = `Restored ${names}.${walNote} Previous state saved to ${result.safetyBackupPath}`;
+        status.textContent = message;
+        status.className = "vault-row-status success";
+        setStatus(message, "success");
+        if (inspectPassphraseInput) inspectPassphraseInput.value = "";
+        await refreshVaults();
+      } catch (error) {
+        status.textContent = String(error);
+        status.className = "vault-row-status error";
+      } finally {
+        button.disabled = false;
+      }
+    });
+  }
+  for (const button of vaultList.querySelectorAll(".delete-vault")) {
+    const fileName = button.dataset.fileName;
+    const status = button.closest(".vault-row").querySelector(".vault-row-status");
+    armConfirm(button, "Confirm delete", async () => {
+      button.disabled = true;
+      try {
+        await invoke("delete_vault", { fileName });
+        await refreshVaults();
+      } catch (error) {
+        status.textContent = String(error);
+        status.className = "vault-row-status error";
+        button.disabled = false;
+      }
     });
   }
   for (const button of vaultList.querySelectorAll(".export-vault")) {
@@ -259,17 +324,34 @@ readButton.addEventListener("click", async () => {
   try {
     const result = await invoke("read_profile", { serial, passphrase });
     renderResult(result);
+    passphraseInput.value = "";
     setStatus("Profile captured and encrypted locally.", "success");
     await refreshVaults();
   } catch (error) {
     setStatus(String(error), "error");
   } finally {
-    passphraseInput.value = "";
     refreshButton.disabled = false;
     refreshReadButton();
   }
 });
 refreshVaultsButton?.addEventListener("click", refreshVaults);
+document.querySelector("#copyDiagnostics")?.addEventListener("click", async () => {
+  const devices = (window.gardenVaultDevices || []).map(d => `${d.serial} gameInstalled=${d.gameInstalled} rootAvailable=${d.rootAvailable}`);
+  const text = [
+    document.querySelector(".version")?.textContent || "GardenVault",
+    `Time: ${new Date().toISOString()}`,
+    `Connection: ${connectionBadge.textContent}`,
+    `Summary: ${deviceSummary.textContent}`,
+    `Devices: ${devices.length ? devices.join("; ") : "none"}`,
+    `Last status: ${readStatus.textContent}`
+  ].join("\n");
+  try {
+    await navigator.clipboard.writeText(text);
+    setStatus("Diagnostics copied. They contain no passphrases or save data.", "success");
+  } catch {
+    setStatus("Could not access the clipboard.", "error");
+  }
+});
 document.querySelector("#backupsNav")?.addEventListener("click", () => vaultList?.scrollIntoView({ behavior: "smooth", block: "center" }));
 window.addEventListener("DOMContentLoaded", () => {
   refreshDevices();

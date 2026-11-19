@@ -46,8 +46,9 @@ test("encrypted backup browser exposes refresh and export controls", () => {
   assert.match(js, /completeFrames/);
   assert.match(js, /data-file-name/);
 });
-test("passphrase is cleared after a capture attempt", () => {
-  assert.match(js, /passphraseInput\.value = ""/);
+test("passphrase is cleared after a successful capture and kept for retry on failure", () => {
+  assert.match(js, /renderResult\(result\);\s*passphraseInput\.value = ""/);
+  assert.doesNotMatch(js, /finally \{\s*passphraseInput\.value = ""/);
 });
 test("desktop theme defaults to dark mode", () => {
   assert.match(html, /name="color-scheme" content="dark"/);
@@ -75,4 +76,25 @@ test("inspector exposes bounded 4 KiB block and XOR heuristic diagnostics", () =
 test("capture success panel describes binary-safe adb pull verification", () => {
   assert.match(js, /Device source and temporary copy matched; ADB pull size and SHA-256 matched before encryption/);
   assert.doesNotMatch(js, /Device-reported stat size and SHA-256 matched the received bytes before encryption/);
+});
+
+test("restore and delete require a second confirming click", () => {
+  assert.match(js, /armConfirm\(button, "Confirm restore"/);
+  assert.match(js, /armConfirm\(button, "Confirm delete"/);
+  assert.match(js, /invoke\("restore_profile", \{ serial, fileName, passphrase \}\)/);
+  assert.match(js, /invoke\("delete_vault", \{ fileName \}\)/);
+});
+test("restore reports the pre-restore safety backup", () => {
+  assert.match(js, /safetyBackupPath/);
+});
+test("device selection survives a refresh in-session without browser storage", () => {
+  assert.match(js, /const previousSerial = deviceSelect\.value/);
+  assert.match(js, /d\.serial === previousSerial/);
+  assert.doesNotMatch(js, /localStorage|sessionStorage/);
+});
+test("diagnostics copy exposes status only, never passphrase fields", () => {
+  const start = js.indexOf('"#copyDiagnostics"');
+  const block = js.slice(start, js.indexOf('].join', start));
+  assert.match(block, /connectionBadge/);
+  assert.doesNotMatch(block, /passphraseInput|inspectPassphraseInput|vaultPassphrase/);
 });

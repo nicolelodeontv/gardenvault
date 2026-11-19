@@ -200,10 +200,7 @@ fn parse_device_pull_metadata(
     let output_text = std::str::from_utf8(stdout)
         .map_err(|_| format!("Could not read {file_name}: invalid device copy metadata."))?;
     let lines = output_text.lines().collect::<Vec<_>>();
-    if lines
-        .iter()
-        .any(|line| *line == "__GARDENVAULT_FILE_MISSING__")
-    {
+    if lines.contains(&"__GARDENVAULT_FILE_MISSING__") {
         return Ok(None);
     }
 
