@@ -116,6 +116,14 @@ jobs:
           if ($installers.Count -eq 0) { throw 'The NSIS setup executable was not generated.' }
           Get-FileHash -Algorithm SHA256 $exe
           $installers | ForEach-Object { Get-FileHash -Algorithm SHA256 $_.FullName }
+      - name: Write SHA256SUMS.txt
+        shell: pwsh
+        run: |
+          $files = @(Get-Item -LiteralPath 'src-tauri/target/release/gardenvault.exe')
+          $files += Get-ChildItem -LiteralPath 'src-tauri/target/release/bundle/nsis' -Filter '*-setup.exe' -File
+          $lines = $files | ForEach-Object { '{0} *{1}' -f (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLower(), $_.Name }
+          $lines | Set-Content -Encoding ascii -LiteralPath 'src-tauri/target/release/SHA256SUMS.txt'
+          Get-Content 'src-tauri/target/release/SHA256SUMS.txt'
       - name: Upload unsigned Windows artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -123,5 +131,6 @@ jobs:
           path: |
             src-tauri/target/release/gardenvault.exe
             src-tauri/target/release/bundle/nsis/*-setup.exe
+            src-tauri/target/release/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30

@@ -48,3 +48,14 @@ ADB discovery checks `GARDENVAULT_ADB`, then `C:\LDPlayer\LDPlayer14\adb.exe`, t
 The frontend cannot pass arbitrary shell commands or file paths. Native code uses fixed ADB command templates against the known Gardenscapes package and three allowlisted save-file names; temporary paths are generated internally and restricted to dedicated capture prefixes.
 
 See [docs/SECURITY.md](docs/SECURITY.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
+
+## Verifying a build
+
+Each CI artifact includes `SHA256SUMS.txt`. In PowerShell, from the folder holding the files:
+
+```powershell
+Get-FileHash .\gardenvault.exe -Algorithm SHA256
+Get-Content .\SHA256SUMS.txt
+```
+
+The hashes must match. The build is unsigned, so Windows SmartScreen may ask you to choose "More info" and then "Run anyway" on first launch.
